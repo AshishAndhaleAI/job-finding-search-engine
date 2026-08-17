@@ -48,6 +48,7 @@ export default defineSchema({
     // from the student's resume documents and used to build tailored resumes.
     education: v.optional(v.array(v.string())),
     resumeStorageId: v.optional(v.id("_storage")),
+    resumeFileName: v.optional(v.string()),
     autoApplyEnabled: v.optional(v.boolean()),
     emailDigestEnabled: v.optional(v.boolean()),
     // WhatsApp notifications (Meta WhatsApp Business Cloud API). `phone` is

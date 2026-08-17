@@ -29,17 +29,24 @@ export function getConvexOrigin(): string {
 }
 
 /**
- * The local Convex backend builds storage upload URLs from its own sandbox
- * origin (e.g. `http://127.0.0.1:3210`), which the browser cannot reach.
- * Rewrite those URLs to the backend origin the browser actually uses. URLs that
- * are already reachable (e.g. a real cloud deployment) pass through untouched.
+ * The local Convex backend builds storage URLs from its own sandbox origin
+ * (e.g. `http://127.0.0.1:3210`), which the browser cannot reach. Rewrite those
+ * URLs to an origin the browser actually uses:
+ *  - sameOrigin (uploads): the app's own origin — Vite dev-proxies /api/storage
+ *    to the Convex backend, so the upload is same-origin and cannot hit CORS or
+ *    proxy issues.
+ *  - otherwise: the backend origin the client already talks to (for viewing
+ *    stored files).
+ * URLs that are already reachable (e.g. a real cloud deployment) pass through
+ * untouched.
  */
-export function rewriteConvexUrl(raw: string): string {
+export function rewriteConvexUrl(raw: string, opts?: { sameOrigin?: boolean }): string {
   try {
     const url = new URL(raw, window.location.origin);
     if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(url.origin)) {
-      url.protocol = new URL(getConvexOrigin()).protocol;
-      url.host = new URL(getConvexOrigin()).host;
+      const target = opts?.sameOrigin ? window.location.origin : getConvexOrigin();
+      url.protocol = new URL(target).protocol;
+      url.host = new URL(target).host;
     }
     return url.toString();
   } catch {

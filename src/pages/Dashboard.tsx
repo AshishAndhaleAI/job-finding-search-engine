@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import {
+  AlertTriangle,
   BellRing,
   Briefcase,
   CheckCircle2,
@@ -16,6 +17,7 @@ import {
   Radar,
   Rocket,
   Settings2,
+  UploadCloud,
   UserRound,
   XCircle,
 } from "lucide-react";
@@ -54,6 +56,38 @@ type Tab = "overview" | "applications" | "profile";
 
 function formatDate(ts: number): string {
   return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/** Upload a file to Convex storage via XHR (gives real progress) and return the storage id. */
+function uploadToStorage(
+  url: string,
+  file: File,
+  onProgress: (p: number) => void,
+): Promise<Id<"_storage">> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.timeout = 90000;
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(e.loaded / e.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const parsed = JSON.parse(xhr.responseText) as { storageId: Id<"_storage"> };
+          resolve(parsed.storageId);
+        } catch {
+          reject(new Error("Unexpected response from the server."));
+        }
+      } else {
+        reject(new Error(`Upload failed (HTTP ${xhr.status}).`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Network error — check your connection and try again."));
+    xhr.ontimeout = () => reject(new Error("Upload timed out. Try a smaller file."));
+    xhr.send(file);
+  });
 }
 
 export default function Dashboard() {
@@ -549,6 +583,8 @@ function ProfileTab() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [fileName, setFileName] = useState("");
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -594,50 +630,49 @@ function ProfileTab() {
     window.setTimeout(() => setSaved(false), 2500);
   }
 
-  async function handleResumeUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+  function handleFileSelect(file: File | null | undefined) {
     if (!file) return;
+    void uploadFile(file);
+  }
+
+  async function uploadFile(file: File) {
     setUploading(true);
+    setUploadProgress(0);
     setUploadError(null);
     setScanResult(null);
+    setFileName(file.name);
     let storageId: Id<"_storage"> | null = null;
     try {
       const url = await generateUploadUrl();
       // The local backend returns a 127.0.0.1 URL the browser can't reach —
-      // rewrite it to the backend origin the client actually connects to.
-      const controller = new AbortController();
-      const timer = window.setTimeout(() => controller.abort(), 45000);
-      let res: Response;
-      try {
-        res = await fetch(rewriteConvexUrl(url), {
-          method: "POST",
-          headers: { "Content-Type": file.type || "application/octet-stream" },
-          body: file,
-          signal: controller.signal,
-        });
-      } finally {
-        window.clearTimeout(timer);
-      }
-      if (!res.ok) throw new Error(`Upload failed (HTTP ${res.status})`);
-      ({ storageId } = (await res.json()) as { storageId: Id<"_storage"> });
-      await setResume({ storageId });
+      // rewrite it to the app's own origin, which Vite dev-proxies to the
+      // Convex backend, so the upload is same-origin and always works.
+      storageId = await uploadToStorage(
+        rewriteConvexUrl(url, { sameOrigin: true }),
+        file,
+        (p) => setUploadProgress(p),
+      );
+      await setResume({ storageId, fileName: file.name });
     } catch (err) {
       setUploadError(
-        err instanceof Error && err.name === "AbortError"
-          ? "Upload timed out. Try a smaller file, or refresh and try again."
-          : `Could not upload your resume: ${err instanceof Error ? err.message : "unknown error"}.`,
+        err instanceof Error ? err.message : "Could not upload your file. Try again.",
       );
       setUploading(false);
+      setUploadProgress(null);
       return;
     }
     setUploading(false);
+    setUploadProgress(null);
 
     // Scan the resume and auto-fill whatever fields are still empty.
     setScanning(true);
     try {
       const parsed = await parseResume({ storageId });
       if (!parsed.ok) {
-        setScanResult({ ok: false, message: parsed.reason ?? "Couldn't read the resume." });
+        setScanResult({
+          ok: false,
+          message: `Uploaded successfully, but we couldn't read text from this file${parsed.reason ? ` — ${parsed.reason}` : ""}. Fill the form manually and hit Save.`,
+        });
       } else {
         const filled: string[] = [];
         if (parsed.name && !fullName.trim()) {
@@ -674,7 +709,7 @@ function ProfileTab() {
         );
       }
     } catch {
-      setScanResult({ ok: false, message: "Couldn't scan the resume. Fill the form manually and Save." });
+      setScanResult({ ok: false, message: "Uploaded successfully, but the scan hit an error. Fill the form manually and hit Save." });
     } finally {
       setScanning(false);
     }
@@ -789,41 +824,114 @@ function ProfileTab() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex flex-wrap items-center gap-3">
-              <label className="cursor-pointer">
-                <input type="file" accept=".pdf,.doc,.docx" className="hidden" onChange={(e) => void handleResumeUpload(e)} />
-                <span className="inline-flex h-9 items-center gap-2 rounded-md border border-input bg-transparent px-4 text-sm shadow-sm transition-colors hover:bg-muted">
-                  {uploading ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />}
-                  {uploading ? "Uploading…" : "Upload resume"}
+            {uploading ? (
+              <div className="rounded-lg border border-border bg-muted/40 p-4">
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <Loader2 className="size-4 shrink-0 animate-spin text-primary" />
+                    <span className="truncate">{fileName}</span>
+                  </span>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {uploadProgress === null ? "Uploading…" : `${Math.round(uploadProgress * 100)}%`}
+                  </span>
+                </div>
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary transition-all duration-200"
+                    style={{ width: `${Math.round((uploadProgress ?? 0) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            ) : profile?.resumeStorageId ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent/40 bg-accent/5 p-4">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
+                    <FileText className="size-4" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{profile.resumeFileName ?? "Resume uploaded"}</p>
+                    <p className="text-xs text-muted-foreground">Saved — the engine uses this for every application.</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {resumeLink && (
+                    <Button variant="outline" size="sm" asChild>
+                      <a href={resumeLink} target="_blank" rel="noreferrer">
+                        View <ExternalLink className="size-3.5" />
+                      </a>
+                    </Button>
+                  )}
+                  <label className="cursor-pointer">
+                    <input
+                      type="file"
+                      accept=".pdf,.doc,.docx,.txt"
+                      className="hidden"
+                      onChange={(e) => {
+                        handleFileSelect(e.target.files?.[0]);
+                        e.target.value = "";
+                      }}
+                    />
+                    <span className="inline-flex h-8 items-center gap-2 rounded-md border border-input bg-transparent px-3 text-xs shadow-sm transition-colors hover:bg-muted">
+                      Replace
+                    </span>
+                  </label>
+                </div>
+              </div>
+            ) : (
+              <label
+                className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-input bg-muted/30 px-6 py-10 text-center transition-colors hover:border-primary/50 hover:bg-muted/50"
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  handleFileSelect(e.dataTransfer.files?.[0]);
+                }}
+              >
+                <input
+                  type="file"
+                  accept=".pdf,.doc,.docx,.txt"
+                  className="hidden"
+                  onChange={(e) => {
+                    handleFileSelect(e.target.files?.[0]);
+                    e.target.value = "";
+                  }}
+                />
+                <span className="flex size-10 items-center justify-center rounded-xl bg-primary/15 text-primary">
+                  <UploadCloud className="size-5" />
+                </span>
+                <span className="text-sm font-medium">Click to upload or drag & drop</span>
+                <span className="max-w-xs text-xs text-muted-foreground">
+                  PDF, DOCX or TXT — the engine scans it and auto-fills your details.
                 </span>
               </label>
-              {resumeLink && (
-                <Button variant="outline" size="sm" asChild>
-                  <a href={resumeLink} target="_blank" rel="noreferrer">
-                    View uploaded resume <ExternalLink className="size-3.5" />
-                  </a>
-                </Button>
-              )}
-              {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
-              {scanning && (
-                <p className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Loader2 className="size-3.5 animate-spin" /> Scanning resume for your details…
-                </p>
-              )}
-              {!scanning && scanResult && (
-                <p
-                  className={cn(
-                    "rounded-md border px-3 py-2 text-xs",
-                    scanResult.ok
-                      ? "border-accent/40 bg-accent/10 text-accent"
-                      : "border-destructive/40 bg-destructive/10 text-destructive",
-                  )}
-                >
-                  {scanResult.ok ? <CheckCircle2 className="mr-1.5 inline size-3.5" /> : <XCircle className="mr-1.5 inline size-3.5" />}
-                  {scanResult.message}
-                </p>
-              )}
-            </div>
+            )}
+
+            {uploadError && (
+              <p className="flex items-start gap-1.5 text-xs text-destructive">
+                <XCircle className="mt-0.5 size-3.5 shrink-0" /> {uploadError}
+              </p>
+            )}
+            {scanning && (
+              <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" /> Scanning resume for your details…
+              </p>
+            )}
+            {!scanning && scanResult && (
+              <p
+                className={cn(
+                  "flex items-start gap-1.5 rounded-md border px-3 py-2 text-xs",
+                  scanResult.ok
+                    ? "border-accent/40 bg-accent/10 text-accent"
+                    : "border-amber-500/40 bg-amber-500/10 text-amber-300",
+                )}
+              >
+                {scanResult.ok ? (
+                  <CheckCircle2 className="mt-0.5 size-3.5 shrink-0" />
+                ) : (
+                  <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                )}
+                {scanResult.message}
+              </p>
+            )}
           </CardContent>
         </Card>
 

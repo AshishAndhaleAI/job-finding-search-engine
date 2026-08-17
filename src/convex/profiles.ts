@@ -72,7 +72,7 @@ export const upsertProfile = mutation({
 
 /** Store the storage id of an uploaded resume on the profile. */
 export const setResume = mutation({
-  args: { storageId: v.id("_storage") },
+  args: { storageId: v.id("_storage"), fileName: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Not signed in");
@@ -82,12 +82,17 @@ export const setResume = mutation({
       .withIndex("userId", (q) => q.eq("userId", userId))
       .first();
     if (existing) {
-      await ctx.db.patch(existing._id, { resumeStorageId: args.storageId, updatedAt: now });
+      await ctx.db.patch(existing._id, {
+        resumeStorageId: args.storageId,
+        resumeFileName: args.fileName,
+        updatedAt: now,
+      });
       return existing._id;
     }
     return await ctx.db.insert("profiles", {
       userId,
       resumeStorageId: args.storageId,
+      resumeFileName: args.fileName,
       createdAt: now,
       updatedAt: now,
     });
