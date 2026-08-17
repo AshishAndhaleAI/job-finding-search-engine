@@ -27,6 +27,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import { cn } from "../lib/utils";
+import { rewriteConvexUrl } from "../lib/convex";
 
 type ApplicationStatus = Doc<"applications">["status"];
 
@@ -460,9 +461,13 @@ function ApplicationsTab() {
 function ProfileTab() {
   const profile = useQuery(api.profiles.getMyProfile);
   const resumeUrl = useQuery(api.profiles.getResumeUrl);
+  // The backend returns a 127.0.0.1 storage URL — rewrite it to the origin the
+  // browser can reach so the "View uploaded resume" link actually opens.
+  const resumeLink = resumeUrl ? rewriteConvexUrl(resumeUrl) : null;
   const upsertProfile = useMutation(api.profiles.upsertProfile);
   const generateUploadUrl = useMutation(api.uploads.generateUploadUrl);
   const setResume = useMutation(api.profiles.setResume);
+  const parseResume = useAction(api.resume.parseResume);
 
   const [fullName, setFullName] = useState("");
   const [headline, setHeadline] = useState("");
@@ -477,6 +482,8 @@ function ProfileTab() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanResult, setScanResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -521,20 +528,79 @@ function ProfileTab() {
     if (!file) return;
     setUploading(true);
     setUploadError(null);
+    setScanResult(null);
+    let storageId: Id<"_storage"> | null = null;
     try {
       const url = await generateUploadUrl();
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": file.type },
-        body: file,
-      });
-      if (!res.ok) throw new Error("Upload failed");
-      const { storageId } = (await res.json()) as { storageId: Id<"_storage"> };
+      // The local backend returns a 127.0.0.1 URL the browser can't reach —
+      // rewrite it to the backend origin the client actually connects to.
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 45000);
+      let res: Response;
+      try {
+        res = await fetch(rewriteConvexUrl(url), {
+          method: "POST",
+          headers: { "Content-Type": file.type || "application/octet-stream" },
+          body: file,
+          signal: controller.signal,
+        });
+      } finally {
+        window.clearTimeout(timer);
+      }
+      if (!res.ok) throw new Error(`Upload failed (HTTP ${res.status})`);
+      ({ storageId } = (await res.json()) as { storageId: Id<"_storage"> });
       await setResume({ storageId });
-    } catch {
-      setUploadError("Could not upload your resume. Try again.");
-    } finally {
+    } catch (err) {
+      setUploadError(
+        err instanceof Error && err.name === "AbortError"
+          ? "Upload timed out. Try a smaller file, or refresh and try again."
+          : `Could not upload your resume: ${err instanceof Error ? err.message : "unknown error"}.`,
+      );
       setUploading(false);
+      return;
+    }
+    setUploading(false);
+
+    // Scan the resume and auto-fill whatever fields are still empty.
+    setScanning(true);
+    try {
+      const parsed = await parseResume({ storageId });
+      if (!parsed.ok) {
+        setScanResult({ ok: false, message: parsed.reason ?? "Couldn't read the resume." });
+      } else {
+        const filled: string[] = [];
+        if (parsed.name && !fullName.trim()) {
+          setFullName(parsed.name);
+          filled.push("name");
+        }
+        if (parsed.phone && !phone.trim()) {
+          setPhone(parsed.phone);
+          filled.push("phone");
+        }
+        if (parsed.location && !location.trim()) {
+          setLocation(parsed.location);
+          filled.push("location");
+        }
+        const skills = parsed.skills ?? [];
+        const roles = parsed.targetRoles ?? [];
+        if (skills.length > 0 && !skillsInput.trim()) {
+          setSkillsInput(skills.join(", "));
+          filled.push("skills");
+        }
+        if (roles.length > 0 && !rolesInput.trim()) {
+          setRolesInput(roles.join(", "));
+          filled.push("target roles");
+        }
+        setScanResult(
+          filled.length > 0
+            ? { ok: true, message: `Resume scanned — auto-filled ${filled.join(", ")}. Review below and hit Save.` }
+            : { ok: true, message: "Resume scanned — no new fields to fill. Complete the form and Save." },
+        );
+      }
+    } catch {
+      setScanResult({ ok: false, message: "Couldn't scan the resume. Fill the form manually and Save." });
+    } finally {
+      setScanning(false);
     }
   }
 
@@ -610,7 +676,10 @@ function ProfileTab() {
             <CardTitle className="flex items-center gap-2">
               <FileText className="size-4 text-primary" /> Resume
             </CardTitle>
-            <CardDescription>The engine attaches this to every application it submits.</CardDescription>
+            <CardDescription>
+              Upload your source resume — the engine scans it to learn about you, then
+              builds a tailored resume for every job it applies to.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex flex-wrap items-center gap-3">
@@ -621,14 +690,32 @@ function ProfileTab() {
                   {uploading ? "Uploading…" : "Upload resume"}
                 </span>
               </label>
-              {resumeUrl && (
+              {resumeLink && (
                 <Button variant="outline" size="sm" asChild>
-                  <a href={resumeUrl} target="_blank" rel="noreferrer">
+                  <a href={resumeLink} target="_blank" rel="noreferrer">
                     View uploaded resume <ExternalLink className="size-3.5" />
                   </a>
                 </Button>
               )}
               {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
+              {scanning && (
+                <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="size-3.5 animate-spin" /> Scanning resume for your details…
+                </p>
+              )}
+              {!scanning && scanResult && (
+                <p
+                  className={cn(
+                    "rounded-md border px-3 py-2 text-xs",
+                    scanResult.ok
+                      ? "border-accent/40 bg-accent/10 text-accent"
+                      : "border-destructive/40 bg-destructive/10 text-destructive",
+                  )}
+                >
+                  {scanResult.ok ? <CheckCircle2 className="mr-1.5 inline size-3.5" /> : <XCircle className="mr-1.5 inline size-3.5" />}
+                  {scanResult.message}
+                </p>
+              )}
             </div>
           </CardContent>
         </Card>

@@ -31,6 +31,9 @@ lerna-debug.log*
 .env.*
 !.env.example
 
+# Local dev JWT signing key (generated per workspace, never commit)
+.jwt-key
+
 # TypeScript
 *.tsbuildinfo
 node_modules/.tmp/

@@ -6,6 +6,7 @@
   "description": "FirstStep — an automated job-application engine for freshers. Students share their profile and resume, the engine searches and applies to entry-level jobs worldwide, and notifies them by email until they land a role.",
   "scripts": {
     "dev": "vite",
+    "dev:all": "sh scripts/dev.sh",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
@@ -21,6 +22,8 @@
     "convex": "^1.44.0",
     "framer-motion": "^13.1.0",
     "lucide-react": "^1.31.0",
+    "mammoth": "^1.12.1",
+    "pdf-parse": "1.1.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.2",

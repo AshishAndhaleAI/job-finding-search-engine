@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { authTables } from "@convex-dev/auth/server";
 
 /**
  * Application lifecycle:
@@ -29,13 +30,9 @@ export const applicationStatus = v.union(
 );
 
 export default defineSchema({
-  // Managed by Convex Auth (@convex-dev/auth). It creates the user row on sign-up.
-  users: defineTable({
-    name: v.optional(v.string()),
-    email: v.optional(v.string()),
-    emailVerified: v.optional(v.boolean()),
-    image: v.optional(v.string()),
-  }).index("email", ["email"]),
+  // Tables managed by Convex Auth (@convex-dev/auth): users, authSessions,
+  // authAccounts, authVerificationRequests, authRateLimits, etc.
+  ...authTables,
 
   // One row per student: what the engine uses to search + apply.
   profiles: defineTable({
@@ -47,6 +44,9 @@ export default defineSchema({
     experienceYears: v.optional(v.number()),
     skills: v.optional(v.array(v.string())),
     targetRoles: v.optional(v.array(v.string())),
+    // Education entries (e.g. "BSc Computer Science — Pune University"), parsed
+    // from the student's resume documents and used to build tailored resumes.
+    education: v.optional(v.array(v.string())),
     resumeStorageId: v.optional(v.id("_storage")),
     autoApplyEnabled: v.optional(v.boolean()),
     emailDigestEnabled: v.optional(v.boolean()),
@@ -69,6 +69,8 @@ export default defineSchema({
     status: applicationStatus,
     createdAt: v.number(),
     appliedAt: v.optional(v.number()),
+    // Tailored resume the engine built for this specific job posting.
+    generatedResume: v.optional(v.string()),
   })
     .index("userId", ["userId"])
     .index("userId_status", ["userId", "status"]),

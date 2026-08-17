@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { applicationStatus } from "./schema";
 
@@ -67,7 +68,7 @@ export const recordMany = mutation({
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("Not signed in");
     const now = Date.now();
-    let created = 0;
+    const ids: Id<"applications">[] = [];
     for (const job of args.jobs) {
       if (job.sourceUrl) {
         const existing = await ctx.db
@@ -77,7 +78,7 @@ export const recordMany = mutation({
           .first();
         if (existing) continue;
       }
-      await ctx.db.insert("applications", {
+      const id = await ctx.db.insert("applications", {
         userId,
         jobTitle: job.jobTitle,
         company: job.company,
@@ -88,9 +89,9 @@ export const recordMany = mutation({
         createdAt: now,
         appliedAt: job.status === "applied" ? now : undefined,
       });
-      created++;
+      ids.push(id);
     }
-    return created;
+    return { created: ids.length, ids };
   },
 });
 
@@ -114,7 +115,7 @@ export const recordManyForUser = mutation({
   },
   handler: async (ctx, args) => {
     const now = Date.now();
-    let created = 0;
+    const ids: Id<"applications">[] = [];
     for (const job of args.jobs) {
       if (job.sourceUrl) {
         const existing = await ctx.db
@@ -124,7 +125,7 @@ export const recordManyForUser = mutation({
           .first();
         if (existing) continue;
       }
-      await ctx.db.insert("applications", {
+      const id = await ctx.db.insert("applications", {
         userId: args.userId,
         jobTitle: job.jobTitle,
         company: job.company,
@@ -135,9 +136,9 @@ export const recordManyForUser = mutation({
         createdAt: now,
         appliedAt: job.status === "applied" ? now : undefined,
       });
-      created++;
+      ids.push(id);
     }
-    return created;
+    return { created: ids.length, ids };
   },
 });
 

@@ -327,7 +327,7 @@ async function runEngineHandler(ctx: ActionCtx, args: { limit?: number }): Promi
   // Live mode flags jobs as "matched" (review + submit from the listing link).
   // Demo mode simulates submitted applications so the tracker stays alive.
   const status: "matched" | "applied" = mode === "live" ? "matched" : "applied";
-  const created = await ctx.runMutation(api.applications.recordMany, {
+  const { created, ids } = await ctx.runMutation(api.applications.recordMany, {
     jobs: jobs.map((j) => ({
       jobTitle: j.title,
       company: j.company,
@@ -336,6 +336,12 @@ async function runEngineHandler(ctx: ActionCtx, args: { limit?: number }): Promi
       status,
     })),
   });
+  // Build a tailored resume for every newly recorded job, from the student's
+  // profile + source documents, so each application ships with a
+  // job-specific resume.
+  for (const applicationId of ids) {
+    await ctx.runMutation(api.resumeGen.generateForUser, { userId, applicationId });
+  }
   await ctx.runMutation(api.notifications.createMany, {
     items: [
       {
@@ -396,7 +402,7 @@ async function engineDailyHandler(ctx: ActionCtx): Promise<{ ran: true; created:
     }
     if (jobs.length === 0) continue;
     const status: "matched" | "applied" = mode === "live" ? "matched" : "applied";
-    const created = await ctx.runMutation(api.applications.recordManyForUser, {
+    const { created, ids } = await ctx.runMutation(api.applications.recordManyForUser, {
       userId: profile.userId,
       jobs: jobs.map((j) => ({
         jobTitle: j.title,
@@ -407,6 +413,13 @@ async function engineDailyHandler(ctx: ActionCtx): Promise<{ ran: true; created:
       })),
     });
     if (created === 0) continue;
+    // Tailored resume per job, generated from the student's profile + documents.
+    for (const applicationId of ids) {
+      await ctx.runMutation(api.resumeGen.generateForUser, {
+        userId: profile.userId,
+        applicationId,
+      });
+    }
     totalCreated += created;
     await ctx.runMutation(api.notifications.createManyForUser, {
       userId: profile.userId,

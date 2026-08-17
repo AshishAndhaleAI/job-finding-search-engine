@@ -6,7 +6,9 @@ import { ConvexAuthProvider } from "@convex-dev/auth/react";
 import App from "./App";
 import "./index.css";
 
-const convexUrl = import.meta.env.VITE_CONVEX_URL as string | undefined;
+import { resolveConvexUrl } from "./lib/convex";
+
+const convexUrl = resolveConvexUrl();
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("Root element #root not found");
 
