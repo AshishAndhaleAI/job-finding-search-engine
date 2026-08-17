@@ -43,6 +43,7 @@ export const upsertProfile = mutation({
     experienceYears: v.optional(v.number()),
     skills: v.optional(v.array(v.string())),
     targetRoles: v.optional(v.array(v.string())),
+    education: v.optional(v.array(v.string())),
     autoApplyEnabled: v.optional(v.boolean()),
     emailDigestEnabled: v.optional(v.boolean()),
     phone: v.optional(v.string()),

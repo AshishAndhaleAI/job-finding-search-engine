@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   ExternalLink,
   FileText,
+  GraduationCap,
   LayoutDashboard,
   Loader2,
   LogOut,
@@ -63,7 +64,7 @@ export default function Dashboard() {
   const navItems: { key: Tab; label: string; icon: typeof LayoutDashboard }[] = [
     { key: "overview", label: "Overview", icon: LayoutDashboard },
     { key: "applications", label: "Applications", icon: Briefcase },
-    { key: "profile", label: "Profile & Resume", icon: UserRound },
+    { key: "profile", label: "My data", icon: UserRound },
   ];
 
   return (
@@ -348,7 +349,25 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
 function ApplicationsTab() {
   const applications = useQuery(api.applications.list, {});
   const updateStatus = useMutation(api.applications.updateStatus);
+  const generateResume = useMutation(api.resumeGen.generateResume);
   const [filter, setFilter] = useState<ApplicationStatus | "all">("all");
+  const [resumeAppId, setResumeAppId] = useState<Id<"applications"> | null>(null);
+  const [generatingId, setGeneratingId] = useState<Id<"applications"> | null>(null);
+  const [genError, setGenError] = useState<string | null>(null);
+
+  const viewApp = resumeAppId ? applications?.find((a) => a._id === resumeAppId) ?? null : null;
+
+  async function handleGenerateResume(id: Id<"applications">) {
+    setGeneratingId(id);
+    setGenError(null);
+    try {
+      await generateResume({ applicationId: id });
+    } catch (err) {
+      setGenError(err instanceof Error ? err.message : "Could not generate the resume.");
+    } finally {
+      setGeneratingId(null);
+    }
+  }
 
   const filtered = useMemo(() => {
     if (!applications) return [];
@@ -434,6 +453,10 @@ function ApplicationsTab() {
                         </a>
                       </Button>
                     )}
+                    <Button variant="outline" size="sm" onClick={() => setResumeAppId(app._id)}>
+                      <FileText className="size-3.5" />
+                      Resume
+                    </Button>
                     <select
                       value={app.status}
                       onChange={(e) =>
@@ -454,12 +477,55 @@ function ApplicationsTab() {
           ))}
         </ul>
       )}
+
+      {viewApp && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setResumeAppId(null)}
+        >
+          <div
+            className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3.5">
+              <div className="min-w-0">
+                <p className="flex items-center gap-2 text-sm font-semibold">
+                  <FileText className="size-4 text-primary" /> Tailored resume
+                </p>
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                  {viewApp.jobTitle} · {viewApp.company}
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setResumeAppId(null)}>
+                Close
+              </Button>
+            </div>
+            <div className="max-h-[60vh] flex-1 overflow-y-auto whitespace-pre-wrap p-5 font-mono text-xs leading-relaxed text-foreground/90">
+              {viewApp.generatedResume ?? "No tailored resume for this job yet — generate one from your profile."}
+            </div>
+            {!viewApp.generatedResume && (
+              <div className="flex items-center gap-3 border-t border-border px-5 py-3.5">
+                <Button
+                  size="sm"
+                  disabled={generatingId !== null}
+                  onClick={() => void handleGenerateResume(viewApp._id)}
+                >
+                  {generatingId === viewApp._id ? <Loader2 className="animate-spin" /> : null}
+                  {generatingId === viewApp._id ? "Generating…" : "Generate tailored resume"}
+                </Button>
+                {genError && <p className="text-xs text-destructive">{genError}</p>}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 function ProfileTab() {
   const profile = useQuery(api.profiles.getMyProfile);
+  const me = useQuery(api.users.getMe);
   const resumeUrl = useQuery(api.profiles.getResumeUrl);
   // The backend returns a 127.0.0.1 storage URL — rewrite it to the origin the
   // browser can reach so the "View uploaded resume" link actually opens.
@@ -475,6 +541,7 @@ function ProfileTab() {
   const [remote, setRemote] = useState(false);
   const [skillsInput, setSkillsInput] = useState("");
   const [rolesInput, setRolesInput] = useState("");
+  const [educationInput, setEducationInput] = useState("");
   const [autoApply, setAutoApply] = useState(true);
   const [emailDigest, setEmailDigest] = useState(true);
   const [phone, setPhone] = useState("");
@@ -494,6 +561,7 @@ function ProfileTab() {
     setRemote(profile.remote ?? false);
     setSkillsInput((profile.skills ?? []).join(", "));
     setRolesInput((profile.targetRoles ?? []).join(", "));
+    setEducationInput((profile.education ?? []).join("\n"));
     setAutoApply(profile.autoApplyEnabled ?? true);
     setEmailDigest(profile.emailDigestEnabled ?? true);
     setPhone(profile.phone ?? "");
@@ -513,6 +581,9 @@ function ProfileTab() {
       remote,
       skills: skills.length ? skills : undefined,
       targetRoles: targetRoles.length ? targetRoles : undefined,
+      education: educationInput.split("\n").map((s) => s.trim()).filter(Boolean).length
+        ? educationInput.split("\n").map((s) => s.trim()).filter(Boolean)
+        : undefined,
       autoApplyEnabled: autoApply,
       emailDigestEnabled: emailDigest,
       phone: phone.trim() || undefined,
@@ -591,6 +662,11 @@ function ProfileTab() {
           setRolesInput(roles.join(", "));
           filled.push("target roles");
         }
+        const education = parsed.education ?? [];
+        if (education.length > 0 && !educationInput.trim()) {
+          setEducationInput(education.join("\n"));
+          filled.push("education");
+        }
         setScanResult(
           filled.length > 0
             ? { ok: true, message: `Resume scanned — auto-filled ${filled.join(", ")}. Review below and hit Save.` }
@@ -607,9 +683,10 @@ function ProfileTab() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="font-display text-2xl font-bold tracking-tight">Profile & Resume</h1>
+        <h1 className="font-display text-2xl font-bold tracking-tight">My data</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          This is everything the engine uses to search and apply for you.
+          Everything the engine needs to find, apply, and build your resume for each job.
+          Fill it once — upload your resume and it auto-fills most of it.
         </p>
       </div>
 
@@ -629,6 +706,13 @@ function ProfileTab() {
             <div className="space-y-2">
               <Label htmlFor="headline">Headline</Label>
               <Input id="headline" value={headline} onChange={(e) => setHeadline(e.target.value)} placeholder="BSc Computer Science graduate" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="email">Email (used on applications)</Label>
+              <Input id="email" value={me?.email ?? ""} readOnly className="bg-muted/50 text-muted-foreground" />
+              <p className="text-xs text-muted-foreground">
+                Your sign-in address — recruiters and interview invites go here.
+              </p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="location">Location</Label>
@@ -668,6 +752,29 @@ function ProfileTab() {
               <Textarea id="skills" value={skillsInput} onChange={(e) => setSkillsInput(e.target.value)} placeholder="Python, SQL, Communication, Excel" rows={2} />
               <p className="text-xs text-muted-foreground">Comma-separated. Used to score how well each job matches you.</p>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <GraduationCap className="size-4 text-primary" /> Education
+            </CardTitle>
+            <CardDescription>
+              Your degrees and coursework — the engine includes these in every tailored resume.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Textarea
+              id="education"
+              value={educationInput}
+              onChange={(e) => setEducationInput(e.target.value)}
+              placeholder={"BSc Computer Science — Pune University\nHigher Secondary (12th) — Science"}
+              rows={3}
+            />
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              One entry per line. Auto-filled when your resume mentions it.
+            </p>
           </CardContent>
         </Card>
 
