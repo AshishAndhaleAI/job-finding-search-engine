@@ -13,6 +13,7 @@ import type * as auth from "../auth.js";
 import type * as crons from "../crons.js";
 import type * as email from "../email.js";
 import type * as engine from "../engine.js";
+import type * as http from "../http.js";
 import type * as notifications from "../notifications.js";
 import type * as profiles from "../profiles.js";
 import type * as resume from "../resume.js";
@@ -33,6 +34,7 @@ declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   email: typeof email;
   engine: typeof engine;
+  http: typeof http;
   notifications: typeof notifications;
   profiles: typeof profiles;
   resume: typeof resume;
