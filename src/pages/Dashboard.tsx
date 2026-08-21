@@ -23,6 +23,9 @@ import {
 } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Doc, Id } from "../convex/_generated/dataModel";
+// Note: scanResume is the Convex action that parses the uploaded resume
+// using pdf-parse/mammoth. It runs on the backend ("use node") so
+// no API keys are needed — 100% free.
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -58,15 +61,18 @@ function formatDate(ts: number): string {
   return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-/** Upload a file to Convex storage via XHR (gives real progress) and return the storage id. */
-function uploadToStorage(
-  url: string,
+/** Upload a file via fetch with progress tracking. Returns the storageId string. */
+function uploadToConvexStorage(
+  uploadUrl: string,
   file: File,
   onProgress: (p: number) => void,
-): Promise<Id<"_storage">> {
+): Promise<string> {
+  // The Convex backend returns a URL like http://127.0.0.1:3210/api/storage/upload?token=...
+  // The browser can't reach that. Rewrite to same-origin so Vite proxies it.
+  const sameOriginUrl = rewriteConvexUrl(uploadUrl, { sameOrigin: true });
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", url);
+    xhr.open("POST", sameOriginUrl);
     xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
     xhr.timeout = 90000;
     xhr.upload.onprogress = (e) => {
@@ -74,12 +80,18 @@ function uploadToStorage(
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
+        // Convex storage returns {"storageId":"..."} in the response body
         try {
-          const parsed = JSON.parse(xhr.responseText) as { storageId: Id<"_storage"> };
-          resolve(parsed.storageId);
-        } catch {
-          reject(new Error("Unexpected response from the server."));
+          const data = JSON.parse(xhr.responseText);
+          if (data.storageId) { resolve(data.storageId); return; }
+        } catch { /* not JSON */ }
+        // Fallback: treat the whole response as the storageId
+        const body = xhr.responseText.trim();
+        if (body && body.length > 0 && !body.startsWith("<")) {
+          resolve(body);
+          return;
         }
+        reject(new Error("Upload succeeded but could not identify the storage ID."));
       } else {
         reject(new Error(`Upload failed (HTTP ${xhr.status}).`));
       }
@@ -565,9 +577,9 @@ function ProfileTab() {
   // browser can reach so the "View uploaded resume" link actually opens.
   const resumeLink = resumeUrl ? rewriteConvexUrl(resumeUrl) : null;
   const upsertProfile = useMutation(api.profiles.upsertProfile);
-  const generateUploadUrl = useMutation(api.uploads.generateUploadUrl);
   const setResume = useMutation(api.profiles.setResume);
-  const parseResume = useAction(api.resume.parseResume);
+  const generateUploadUrl = useMutation(api.uploads.generateUploadUrl);
+  const scanResume = useAction(api.resume.parseResume);
 
   const [fullName, setFullName] = useState("");
   const [headline, setHeadline] = useState("");
@@ -641,77 +653,71 @@ function ProfileTab() {
     setUploadError(null);
     setScanResult(null);
     setFileName(file.name);
-    let storageId: Id<"_storage"> | null = null;
     try {
-      const url = await generateUploadUrl();
-      // The local backend returns a 127.0.0.1 URL the browser can't reach —
-      // rewrite it to the app's own origin, which Vite dev-proxies to the
-      // Convex backend, so the upload is same-origin and always works.
-      storageId = await uploadToStorage(
-        rewriteConvexUrl(url, { sameOrigin: true }),
-        file,
-        (p) => setUploadProgress(p),
-      );
-      await setResume({ storageId, fileName: file.name });
+      // Step 1: get a signed upload URL from Convex storage
+      const uploadUrl = await generateUploadUrl();
+      // Step 2: upload the file to Convex storage (same-origin via Vite proxy)
+      const storageId = await uploadToConvexStorage(uploadUrl, file, (p) => setUploadProgress(p));
+      // Step 3: save the reference to the user's profile
+      await setResume({ storageId: storageId as Id<"_storage">, fileName: file.name });
+      setUploading(false);
+      setUploadProgress(null);
+
+      // Step 4: scan the resume to auto-fill profile fields
+      setScanning(true);
+      try {
+        const parsed = await scanResume({ storageId: storageId as Id<"_storage"> });
+        if (!parsed || !parsed.ok) {
+          setScanResult({
+            ok: false,
+            message: `Uploaded successfully, but we couldn't read text from this file${parsed?.reason ? ` — ${parsed.reason}` : ""}. Fill the form manually and hit Save.`,
+          });
+        } else {
+          const filled: string[] = [];
+          if (parsed.name && !fullName.trim()) {
+            setFullName(parsed.name);
+            filled.push("name");
+          }
+          if (parsed.phone && !phone.trim()) {
+            setPhone(parsed.phone);
+            filled.push("phone");
+          }
+          if (parsed.location && !location.trim()) {
+            setLocation(parsed.location);
+            filled.push("location");
+          }
+          const skills = parsed.skills ?? [];
+          const roles = parsed.targetRoles ?? [];
+          if (skills.length > 0 && !skillsInput.trim()) {
+            setSkillsInput(skills.join(", "));
+            filled.push("skills");
+          }
+          if (roles.length > 0 && !rolesInput.trim()) {
+            setRolesInput(roles.join(", "));
+            filled.push("target roles");
+          }
+          const education = parsed.education ?? [];
+          if (education.length > 0 && !educationInput.trim()) {
+            setEducationInput(education.join("\n"));
+            filled.push("education");
+          }
+          setScanResult(
+            filled.length > 0
+              ? { ok: true, message: `Resume scanned — auto-filled ${filled.join(", ")}. Review below and hit Save.` }
+              : { ok: true, message: "Resume scanned — no new fields to fill. Complete the form and Save." },
+          );
+        }
+      } catch {
+        setScanResult({ ok: false, message: "Uploaded successfully, but the scan hit an error. Fill the form manually and hit Save." });
+      } finally {
+        setScanning(false);
+      }
     } catch (err) {
+      setUploading(false);
+      setUploadProgress(null);
       setUploadError(
         err instanceof Error ? err.message : "Could not upload your file. Try again.",
       );
-      setUploading(false);
-      setUploadProgress(null);
-      return;
-    }
-    setUploading(false);
-    setUploadProgress(null);
-
-    // Scan the resume and auto-fill whatever fields are still empty.
-    setScanning(true);
-    try {
-      const parsed = await parseResume({ storageId });
-      if (!parsed.ok) {
-        setScanResult({
-          ok: false,
-          message: `Uploaded successfully, but we couldn't read text from this file${parsed.reason ? ` — ${parsed.reason}` : ""}. Fill the form manually and hit Save.`,
-        });
-      } else {
-        const filled: string[] = [];
-        if (parsed.name && !fullName.trim()) {
-          setFullName(parsed.name);
-          filled.push("name");
-        }
-        if (parsed.phone && !phone.trim()) {
-          setPhone(parsed.phone);
-          filled.push("phone");
-        }
-        if (parsed.location && !location.trim()) {
-          setLocation(parsed.location);
-          filled.push("location");
-        }
-        const skills = parsed.skills ?? [];
-        const roles = parsed.targetRoles ?? [];
-        if (skills.length > 0 && !skillsInput.trim()) {
-          setSkillsInput(skills.join(", "));
-          filled.push("skills");
-        }
-        if (roles.length > 0 && !rolesInput.trim()) {
-          setRolesInput(roles.join(", "));
-          filled.push("target roles");
-        }
-        const education = parsed.education ?? [];
-        if (education.length > 0 && !educationInput.trim()) {
-          setEducationInput(education.join("\n"));
-          filled.push("education");
-        }
-        setScanResult(
-          filled.length > 0
-            ? { ok: true, message: `Resume scanned — auto-filled ${filled.join(", ")}. Review below and hit Save.` }
-            : { ok: true, message: "Resume scanned — no new fields to fill. Complete the form and Save." },
-        );
-      }
-    } catch {
-      setScanResult({ ok: false, message: "Uploaded successfully, but the scan hit an error. Fill the form manually and hit Save." });
-    } finally {
-      setScanning(false);
     }
   }
 

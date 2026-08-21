@@ -197,38 +197,53 @@ async function extractText(
   return Buffer.from(bytes).toString("utf8");
 }
 
+export type ResumeAnalysis = {
+  ok: boolean;
+  reason?: string;
+  name?: string;
+  email?: string;
+  phone?: string;
+  location?: string;
+  skills?: string[];
+  targetRoles?: string[];
+  education?: string[];
+};
+
+/** Analyze raw resume bytes and pull out the fields the engine needs. */
+export async function analyzeResumeBytes(bytes: Uint8Array): Promise<ResumeAnalysis> {
+  const kind = detectKind(bytes);
+  if (kind === "unknown") {
+    return { ok: false, reason: "Unsupported file type — upload a PDF or DOCX resume." };
+  }
+
+  let text: string;
+  try {
+    text = cleanText(await extractText(kind, bytes));
+  } catch {
+    return { ok: false, reason: "Could not read the file — it may be corrupted." };
+  }
+  if (text.length < 20) {
+    return { ok: false, reason: "No readable text found in this file (scanned images aren't supported yet)." };
+  }
+
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  return {
+    ok: true,
+    name: extractName(lines),
+    email: extractEmail(text),
+    phone: extractPhone(text),
+    location: extractLocation(text),
+    skills: extractSkills(text),
+    targetRoles: extractRoles(text),
+    education: extractEducation(lines),
+  };
+}
+
 export const parseResume = action({
   args: { storageId: v.id("_storage") },
   handler: async (ctx, args) => {
     const stored = await ctx.storage.get(args.storageId);
     if (!stored) return { ok: false, reason: "File not found in storage." };
-
-    const bytes = new Uint8Array(await stored.arrayBuffer());
-    const kind = detectKind(bytes);
-    if (kind === "unknown") {
-      return { ok: false, reason: "Unsupported file type — upload a PDF or DOCX resume." };
-    }
-
-    let text: string;
-    try {
-      text = cleanText(await extractText(kind, bytes));
-    } catch {
-      return { ok: false, reason: "Could not read the file — it may be corrupted." };
-    }
-    if (text.length < 20) {
-      return { ok: false, reason: "No readable text found in this file (scanned images aren't supported yet)." };
-    }
-
-    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-    return {
-      ok: true,
-      name: extractName(lines),
-      email: extractEmail(text),
-      phone: extractPhone(text),
-      location: extractLocation(text),
-      skills: extractSkills(text),
-      targetRoles: extractRoles(text),
-      education: extractEducation(lines),
-    };
+    return await analyzeResumeBytes(new Uint8Array(await stored.arrayBuffer()));
   },
 });
