@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { useAuthActions } from "@convex-dev/auth/react";
@@ -57,6 +57,63 @@ const STATUS_ORDER: ApplicationStatus[] = [
 
 type Tab = "overview" | "applications" | "profile";
 
+/** Smoothly counts up to `value` — the dashboard's living-numbers effect. */
+function useCountUp(value: number, duration = 900): number {
+  const [display, setDisplay] = useState(0);
+  const raf = useRef<number | null>(null);
+  useEffect(() => {
+    const from = 0;
+    const start = performance.now();
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(Math.round(from + (value - from) * eased));
+      if (t < 1) raf.current = requestAnimationFrame(tick);
+    };
+    raf.current = requestAnimationFrame(tick);
+    return () => {
+      if (raf.current !== null) cancelAnimationFrame(raf.current);
+    };
+  }, [value, duration]);
+  return display;
+}
+
+/** Holographic success-probability ring — the Overview's centerpiece gauge. */
+function ProbabilityRing({ value, label }: { value: number; label: string }) {
+  const animated = useCountUp(value, 1400);
+  const R = 52;
+  const C = 2 * Math.PI * R;
+  return (
+    <div className="flex items-center gap-5">
+      <div className="relative size-32 shrink-0">
+        <svg viewBox="0 0 128 128" className="prob-ring size-full">
+          <defs>
+            <linearGradient id="probGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="var(--neon)" />
+              <stop offset="100%" stopColor="var(--neon-2)" />
+            </linearGradient>
+          </defs>
+          <circle cx="64" cy="64" r={R} fill="none" stroke="color-mix(in oklch, var(--border) 70%, transparent)" strokeWidth="9" />
+          <circle
+            cx="64" cy="64" r={R} fill="none"
+            stroke="url(#probGrad)" strokeWidth="9" strokeLinecap="round"
+            strokeDasharray={C}
+            strokeDashoffset={C - (C * Math.min(100, animated)) / 100}
+            style={{ filter: "drop-shadow(0 0 8px color-mix(in oklch, var(--neon) 60%, transparent))" }}
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="font-display text-3xl font-bold neon-text">{animated}%</span>
+        </div>
+      </div>
+      <div className="min-w-0">
+        <p className="font-display text-sm font-semibold">Hire probability index</p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{label}</p>
+      </div>
+    </div>
+  );
+}
+
 function formatDate(ts: number): string {
   return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
@@ -97,21 +154,29 @@ export default function Dashboard() {
   ];
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="relative min-h-screen bg-background text-foreground">
+      {/* 2050 ambience: living aurora + engineering grid */}
+      <div className="aurora-field" aria-hidden>
+        <div className="aurora-blob aurora-a" />
+        <div className="aurora-blob aurora-b" />
+        <div className="aurora-blob aurora-c" />
+        <div className="grid-floor absolute inset-0" />
+      </div>
       {/* Topbar */}
-      <header className="sticky top-0 z-40 border-b border-border/60 bg-background/85 backdrop-blur-md">
+      <header className="holo sticky top-0 z-40 border-b border-border/60">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6">
           <div className="flex items-center gap-2.5">
-            <span className="flex size-9 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-400 to-teal-600">
+            <span className="relative flex size-9 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-400 via-sky-500 to-violet-500 shadow-[0_0_18px_-2px] shadow-cyan-400/60">
               <Radar className="size-5 text-slate-950" />
+              <span className="sonar-ring absolute inset-0 rounded-xl border border-cyan-300/60" />
             </span>
             <span className="hidden font-display text-lg font-bold sm:block">
-              First<span className="text-primary">Step</span>
+              First<span className="neon-text">Step</span>
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <span className="hidden items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground md:flex">
-              <span className="size-1.5 rounded-full bg-emerald-400" />
+            <span className="hidden items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 font-mono text-[11px] uppercase tracking-widest text-emerald-300 md:flex">
+              <span className="live-dot size-1.5 rounded-full bg-emerald-400 text-emerald-400" />
               Engine online
             </span>
             <Button variant="ghost" size="sm" asChild>
@@ -139,9 +204,9 @@ export default function Dashboard() {
                 key={item.key}
                 onClick={() => setTab(item.key)}
                 className={cn(
-                  "flex shrink-0 items-center gap-2.5 rounded-lg px-3.5 py-2.5 text-sm font-medium transition-colors",
+                  "flex shrink-0 items-center gap-2.5 rounded-lg px-3.5 py-2.5 text-sm font-medium transition-all",
                   tab === item.key
-                    ? "bg-primary/10 text-primary"
+                    ? "bg-primary/10 text-primary shadow-[inset_0_0_0_1px] shadow-primary/30"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground",
                 )}
               >
@@ -158,7 +223,7 @@ export default function Dashboard() {
         </aside>
 
         {/* Content */}
-        <main className="min-w-0 flex-1">
+        <main key={tab} className="boot-in min-w-0 flex-1">
           {tab === "overview" && <OverviewTab onNavigate={setTab} />}
           {tab === "applications" && <ApplicationsTab />}
           {tab === "profile" && <ProfileTab />}
@@ -179,12 +244,13 @@ function StatCard({
   icon: typeof Briefcase;
   accent: string;
 }) {
+  const animated = useCountUp(value);
   return (
-    <Card className="transition-colors hover:border-primary/40">
+    <Card className="holo holo-hover">
       <CardContent className="flex items-center justify-between p-5">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
-          <p className="mt-1.5 font-display text-3xl font-bold">{value}</p>
+          <p className="font-mono text-[11px] font-medium uppercase tracking-widest text-muted-foreground">{label}</p>
+          <p className="mt-1.5 font-display text-3xl font-bold tabular-nums">{animated}</p>
         </div>
         <span className={cn("flex size-10 items-center justify-center rounded-xl", accent)}>
           <Icon className="size-5" />
@@ -241,16 +307,41 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
           ? `last sweep ${lastRunAgoMin} min ago`
           : `last sweep ${Math.round(lastRunAgoMin / 60)}h ago`;
 
+  // Hire-probability index: a live heuristic from the applicant's funnel —
+  // momentum (applied volume), traction (interviews) and wins (offers).
+  const hireIndex = useMemo(() => {
+    if (!stats || stats.total === 0) return 0;
+    const momentum = Math.min(45, stats.applied * 2.2);
+    const traction = Math.min(35, stats.interviews * 12);
+    const wins = Math.min(20, stats.offers * 10);
+    const base = Math.min(15, stats.total * 1.2);
+    return Math.round(Math.min(96, base + momentum + traction + wins));
+  }, [stats]);
+  const hireLabel =
+    hireIndex >= 70
+      ? "Exceptional momentum — offers are statistically close. Keep the engine running."
+      : hireIndex >= 40
+        ? "Strong trajectory — interviews typically arrive in this zone. Watch your inbox."
+        : hireIndex > 0
+          ? "Engine building your pipeline. Probability climbs with every applied role."
+          : "Run the engine or wait for the next sweep to start building your index.";
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl font-bold tracking-tight">Overview</h1>
+          <h1 className="font-display text-2xl font-bold tracking-tight">
+            Mission <span className="text-holo">Control</span>
+          </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Your engine at a glance — applications, interviews, and offers.
           </p>
         </div>
-        <Button onClick={() => void handleRunEngine()} disabled={running}>
+        <Button
+          onClick={() => void handleRunEngine()}
+          disabled={running}
+          className="shadow-[0_0_24px_-6px] shadow-cyan-400/50 transition-shadow hover:shadow-cyan-400/70"
+        >
           {running ? <Loader2 className="animate-spin" /> : <Rocket className="size-4" />}
           {running ? "Engine running…" : "Run engine now"}
         </Button>
@@ -301,6 +392,14 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
       )}
 
       {stats && stats.total > 0 && (
+        <Card className="holo scanlines relative overflow-hidden">
+          <CardContent className="p-5">
+            <ProbabilityRing value={hireIndex} label={hireLabel} />
+          </CardContent>
+        </Card>
+      )}
+
+      {stats && stats.total > 0 && (
         <Card>
           <CardContent className="p-5">
             <p className="mb-2 text-xs font-medium text-muted-foreground">Your pipeline — from first application to offer</p>
@@ -327,7 +426,11 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Engine status */}
-        <Card>
+        <Card className="holo relative overflow-hidden">
+          <div aria-hidden className="pointer-events-none absolute -right-16 -top-16 size-48 opacity-30">
+            <div className="radar-grid size-full rounded-full" />
+            <div className="radar-sweep absolute inset-0 rounded-full bg-[conic-gradient(from_0deg,color-mix(in_oklch,var(--neon)_35%,transparent),transparent_28%)]" />
+          </div>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Radar className="size-4 text-primary" /> Continuous job hunt
@@ -557,7 +660,7 @@ function ApplicationsTab() {
         <ul className="space-y-3">
           {filtered.map((app) => (
             <li key={app._id}>
-              <Card className="transition-colors hover:border-primary/40">
+              <Card className="holo holo-hover">
                 <CardContent className="flex flex-wrap items-center justify-between gap-4 p-5">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">

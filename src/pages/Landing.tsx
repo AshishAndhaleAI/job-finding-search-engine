@@ -133,7 +133,14 @@ function RadarVisual() {
 
 export default function Landing() {
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="relative min-h-screen overflow-hidden bg-background text-foreground">
+      {/* 2050 ambience */}
+      <div className="aurora-field" aria-hidden>
+        <div className="aurora-blob aurora-a" />
+        <div className="aurora-blob aurora-b" />
+        <div className="aurora-blob aurora-c" />
+        <div className="grid-floor absolute inset-0" />
+      </div>
       {/* Nav */}
       <header className="sticky top-0 z-50 border-b border-border/60 bg-background/80 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
@@ -163,17 +170,15 @@ export default function Landing() {
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(34,211,238,0.12),transparent_55%)]" />
         <div className="mx-auto grid max-w-6xl items-center gap-12 px-4 pb-20 pt-16 sm:px-6 lg:grid-cols-2 lg:pt-24">
           <motion.div initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}>
-            <span className="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
+            <span className="inline-flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1 font-mono text-[11px] uppercase tracking-widest text-cyan-300">
               <Sparkles className="size-3.5" />
-              Built for freshers with 0 years of experience
+              Autonomous career engine · 2050-class
             </span>
             <h1 className="mt-6 font-display text-4xl font-bold leading-[1.08] tracking-tight sm:text-5xl lg:text-6xl">
               Your job search,
               <br />
               running on{" "}
-              <span className="bg-gradient-to-r from-cyan-400 via-teal-300 to-emerald-400 bg-clip-text text-transparent">
-                autopilot
-              </span>
+              <span className="text-holo">autopilot</span>
             </h1>
             <p className="mt-6 max-w-xl text-base leading-relaxed text-muted-foreground sm:text-lg">
               FirstStep is the job-hunting engine for students. Share your profile and resume
@@ -181,7 +186,7 @@ export default function Landing() {
               every update until you land your first role.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-4">
-              <Button size="lg" asChild>
+              <Button size="lg" asChild className="shadow-[0_0_32px_-8px] shadow-cyan-400/60 transition-shadow hover:shadow-cyan-300/80">
                 <Link to={AUTH_URL}>
                   Start applying free <ArrowRight />
                 </Link>
@@ -210,6 +215,22 @@ export default function Landing() {
           >
             <RadarVisual />
           </motion.div>
+        </div>
+      </section>
+
+      {/* Live engine ticker — the hunt never stops */}
+      <section aria-hidden className="overflow-hidden border-b border-cyan-400/15 bg-cyan-400/[0.04] py-2.5">
+        <div className="ticker-track gap-10 font-mono text-[11px] uppercase tracking-widest text-cyan-300/80">
+          {[0, 1].map((copy) => (
+            <span key={copy} className="flex shrink-0 items-center gap-10">
+              <span className="live-dot text-emerald-400">engine sweeping 6 job boards</span>
+              <span>◆ resume scanned → details auto-filled</span>
+              <span>◆ tailored resume generated for new match</span>
+              <span>◆ application email queued with reply-to applicant</span>
+              <span>◆ fresher-only filter: senior roles rejected</span>
+              <span>◆ next sweep in &lt;60 min</span>
+            </span>
+          ))}
         </div>
       </section>
 
