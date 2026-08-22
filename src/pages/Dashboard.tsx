@@ -469,6 +469,33 @@ function ApplicationsTab() {
                     <p className="mt-1 text-sm text-muted-foreground">
                       {app.company} · {app.location}
                     </p>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                      {app.employmentType && (
+                        <span className="rounded-full border border-border bg-card px-2 py-0.5 text-[11px] text-muted-foreground">
+                          {app.employmentType}
+                        </span>
+                      )}
+                      {app.seniority && (
+                        <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-400">
+                          {app.seniority} level
+                        </span>
+                      )}
+                      {app.sponsorship === true && (
+                        <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] text-sky-400">
+                          Visa sponsorship mentioned
+                        </span>
+                      )}
+                      {app.board && (
+                        <span className="rounded-full border border-border bg-card px-2 py-0.5 text-[11px] text-muted-foreground">
+                          via {app.board}
+                        </span>
+                      )}
+                      {typeof app.postedAt === "number" && (
+                        <span className="text-[11px] text-muted-foreground/70">
+                          posted {formatDate(app.postedAt)}
+                        </span>
+                      )}
+                    </div>
                     <p className="mt-0.5 text-xs text-muted-foreground/70">
                       {formatDate(app.createdAt)}
                       {app.appliedAt ? ` · applied ${formatDate(app.appliedAt)}` : ""}

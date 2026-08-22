@@ -10,7 +10,109 @@ type JobCandidate = {
   location: string;
   url?: string;
   haystack: string;
+  source?: string;
+  employmentType?: string; // "Full-time" | "Internship" | "Contract" | "Part-time"
+  postedAt?: number; // epoch ms when the employer posted it
+  tags?: string[];
 };
+
+/* ---------------------------------------------------------------------------
+ * FRESHER-LEVEL FILTER — the engine only keeps jobs a 0-experience student can
+ * realistically get. Senior/lead/management titles and postings demanding
+ * years of experience are rejected outright.
+ * ------------------------------------------------------------------------- */
+
+const SENIOR_TITLE_BLOCK: RegExp[] = [
+  /\bsenior\b/i,
+  /\bsr\.?\b/i,
+  /\blead\b/i,
+  /\bprincipal\b/i,
+  /\bstaff\b/i,
+  /\bhead of\b/i,
+  /\bdirector\b/i,
+  /\bvp\b/i,
+  /\bchief\b/i,
+  /\barchitect\b/i,
+  /\bmanager\b/i,
+  /\bsupervisor\b/i,
+  /\bexperienced\b/i,
+  /\bexpert\b/i,
+];
+
+const FRESH_SIGNALS: RegExp[] = [
+  /entry[- ]level/i,
+  /\bjunior\b/i,
+  /\bfresher\b/i,
+  /\bgraduate\b/i,
+  /\btrainee\b/i,
+  /\bintern(ship)?\b/i,
+  /\bno experience\b/i,
+  /\b0[- ]?experience\b/i,
+  /\bearly career\b/i,
+  /\bstudent\b/i,
+  /\bcampus\b/i,
+  /\bapprentice\b/i,
+];
+
+/** Vague aggregator posts that aren't real, specific openings. */
+const JUNK_TITLE_BLOCK: RegExp[] = [
+  /^open positions?$/i,
+  /^multiple (positions|roles|openings)$/i,
+  /^various /i,
+  /^job (alert|offer)/i,
+  /^apply now/i,
+  /^we are hiring$/i,
+  /^hiring (now|for)$/i,
+];
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'");
+}
+
+/** True when a posting is appropriate for a 0-experience applicant. */
+function isFresherFriendly(job: JobCandidate): boolean {
+  const title = job.title;
+  if (SENIOR_TITLE_BLOCK.some((re) => re.test(title))) return false;
+  if (JUNK_TITLE_BLOCK.some((re) => re.test(title.trim()))) return false;
+  // Reject postings demanding 3+ years of experience anywhere in the text.
+  const m = `${title} ${job.haystack}`.match(/(\d+)\s*\+?\s*(?:years|yrs)\b/i);
+  if (m && parseInt(m[1], 10) >= 3) return false;
+  return true;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function scoreJob(job: JobCandidate, roles: string[], skills: string[]): number {
+  const hay = job.haystack.toLowerCase();
+  const title = job.title.toLowerCase();
+  let score = 0;
+  let roleHit = false;
+  for (const role of roles) {
+    // Word-boundary match so "software engineer" does NOT match inside
+    // "senior software engineer" (that title is rejected separately anyway).
+    const re = new RegExp(`\\b${escapeRegExp(role.toLowerCase())}\\b`);
+    if (re.test(hay)) {
+      score += 3;
+      roleHit = true;
+      // A role match in the actual JOB TITLE is far more relevant than one
+      // buried in tags/description — rank those first.
+      if (re.test(title)) score += 3;
+    }
+  }
+  for (const skill of skills) {
+    if (skill && hay.includes(skill.toLowerCase())) score += 2;
+  }
+  if (FRESH_SIGNALS.some((re) => re.test(`${job.title} ${job.haystack}`))) score += 2;
+  // Only jobs whose ROLE matched count — a skill-only match is not enough.
+  return roleHit ? score : 0;
+}
 
 /**
  * Demo jobs used when every live job source is unreachable, so the product can
@@ -78,17 +180,7 @@ function expandRoles(profile: {
   return out.slice(0, 12);
 }
 
-function scoreJob(job: JobCandidate, roles: string[], skills: string[]): number {
-  const hay = job.haystack.toLowerCase();
-  let score = 0;
-  for (const role of roles) {
-    if (hay.includes(role.toLowerCase())) score += 3;
-  }
-  for (const skill of skills) {
-    if (hay.includes(skill.toLowerCase())) score += 2;
-  }
-  return score;
-}
+
 
 function matchDemoJobs(
   targetRoles: string[],
@@ -109,6 +201,21 @@ function matchDemoJobs(
  * takes the whole engine down.
  * ------------------------------------------------------------------------- */
 
+function normalizeEmploymentType(raw?: string | null): string | undefined {
+  if (!raw) return undefined;
+  const v = raw.toLowerCase();
+  if (v.includes("intern")) return "Internship";
+  if (v.includes("contract")) return "Contract";
+  if (v.includes("part") || v === "part_time") return "Part-time";
+  if (v.includes("temp") || v.includes("temporary")) return "Temporary";
+  if (v.includes("full") || v === "full_time") return "Full-time";
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
+function sponsorshipFrom(text: string): boolean {
+  return /visa spons|sponsori|work visa|h-1b|h1b|relocation support/i.test(text);
+}
+
 async function fetchFromRemotive(): Promise<JobCandidate[]> {
   const res = await fetch("https://remotive.com/api/remote-jobs?limit=100");
   if (!res.ok) throw new Error(`Remotive HTTP ${res.status}`);
@@ -119,6 +226,8 @@ async function fetchFromRemotive(): Promise<JobCandidate[]> {
       candidate_required_location?: string | null;
       url?: string;
       tags?: string[];
+      job_type?: string | null;
+      publication_date?: string | null;
     }>;
   };
   return (data.jobs ?? []).map((j) => ({
@@ -127,11 +236,15 @@ async function fetchFromRemotive(): Promise<JobCandidate[]> {
     location: j.candidate_required_location || "Remote",
     url: j.url,
     haystack: [j.title, j.company_name, ...(j.tags ?? [])].filter(Boolean).join(" "),
+    source: "Remotive",
+    employmentType: normalizeEmploymentType(j.job_type),
+    postedAt: j.publication_date ? Date.parse(j.publication_date) || undefined : undefined,
+    tags: j.tags,
   }));
 }
 
-async function fetchFromArbeitnow(): Promise<JobCandidate[]> {
-  const res = await fetch("https://www.arbeitnow.com/api/job-board-api?page=1");
+async function fetchArbeitnowPage(page: number): Promise<JobCandidate[]> {
+  const res = await fetch(`https://www.arbeitnow.com/api/job-board-api?page=${page}`);
   if (!res.ok) throw new Error(`Arbeitnow HTTP ${res.status}`);
   const data = (await res.json()) as {
     data?: Array<{
@@ -140,6 +253,8 @@ async function fetchFromArbeitnow(): Promise<JobCandidate[]> {
       location?: string;
       url?: string;
       tags?: string[];
+      job_types?: string[] | null;
+      created_at?: number | null; // unix seconds
     }>;
   };
   return (data.data ?? []).map((j) => ({
@@ -148,6 +263,81 @@ async function fetchFromArbeitnow(): Promise<JobCandidate[]> {
     location: j.location ?? "Remote",
     url: j.url,
     haystack: [j.title, j.company_name, j.location, ...(j.tags ?? [])].filter(Boolean).join(" "),
+    source: "Arbeitnow",
+    employmentType: normalizeEmploymentType(j.job_types?.[0]),
+    postedAt: j.created_at ? j.created_at * 1000 : undefined,
+    tags: j.tags,
+  }));
+}
+
+async function fetchFromArbeitnow(): Promise<JobCandidate[]> {
+  // Three pages per sweep for a much wider net.
+  const pages = await Promise.allSettled([1, 2, 3].map((p) => fetchArbeitnowPage(p)));
+  const out: JobCandidate[] = [];
+  for (const p of pages) if (p.status === "fulfilled") out.push(...p.value);
+  if (out.length === 0) throw new Error("Arbeitnow returned nothing");
+  return out;
+}
+
+/** Jobicy — free remote-jobs API with explicit seniority levels. */
+async function fetchFromJobicy(): Promise<JobCandidate[]> {
+  const res = await fetch("https://jobicy.com/api/v2/remote-jobs?count=50");
+  if (!res.ok) throw new Error(`Jobicy HTTP ${res.status}`);
+  const data = (await res.json()) as {
+    jobs?: Array<{
+      url?: string;
+      jobTitle?: string;
+      companyName?: string;
+      jobGeo?: string | null;
+      jobLevel?: string | null;   // e.g. "Entry", "Mid", "Senior"
+      jobType?: string | null;    // e.g. "Full Time", "Internship"
+      pubDate?: string | null;
+      tags?: string[] | null;
+    }>;
+  };
+  return (data.jobs ?? []).map((j) => ({
+    title: j.jobTitle ?? "Unknown role",
+    company: j.companyName ?? "Unknown company",
+    location: j.jobGeo || "Remote",
+    url: j.url,
+    haystack: [j.jobTitle, j.companyName, j.jobLevel, ...(j.tags ?? [])].filter(Boolean).join(" "),
+    source: "Jobicy",
+    employmentType: normalizeEmploymentType(j.jobType),
+    postedAt: j.pubDate ? Date.parse(j.pubDate) || undefined : undefined,
+    tags: j.tags ?? undefined,
+  }));
+}
+
+/** Himalayas App — free remote-jobs API with seniority metadata. */
+async function fetchFromHimalayas(): Promise<JobCandidate[]> {
+  const res = await fetch("https://himalayasapp.com/api/jobs?limit=50");
+  if (!res.ok) throw new Error(`Himalayas HTTP ${res.status}`);
+  const data = (await res.json()) as {
+    jobs?: Array<{
+      title?: string;
+      companyName?: string;
+      locationRestrictions?: string[] | null;
+      applicationLink?: string | null;
+      guid?: string | null;
+      pubDate?: string | null;
+      employmentType?: string | null;
+      seniority?: string[] | null;
+      keywords?: string[] | null;
+    }>;
+  };
+  return (data.jobs ?? []).map((j) => ({
+    title: j.title ?? "Unknown role",
+    company: j.companyName ?? "Unknown company",
+    location:
+      j.locationRestrictions && j.locationRestrictions.length > 0
+        ? j.locationRestrictions.join(", ")
+        : "Remote",
+    url: j.applicationLink ?? j.guid ?? undefined,
+    haystack: [j.title, j.companyName, ...(j.seniority ?? []), ...(j.keywords ?? [])].filter(Boolean).join(" "),
+    source: "Himalayas",
+    employmentType: normalizeEmploymentType(j.employmentType),
+    postedAt: j.pubDate ? Date.parse(j.pubDate) || undefined : undefined,
+    tags: j.keywords ?? undefined,
   }));
 }
 
@@ -162,6 +352,7 @@ async function fetchFromRemoteOk(): Promise<JobCandidate[]> {
     location?: string;
     url?: string;
     tags?: string[];
+    date?: string;
   }>;
   return data
     .filter((j) => Boolean(j.url) && Boolean(j.position))
@@ -171,6 +362,9 @@ async function fetchFromRemoteOk(): Promise<JobCandidate[]> {
       location: j.location || "Remote",
       url: j.url,
       haystack: [j.position, j.company, j.location, ...(j.tags ?? [])].filter(Boolean).join(" "),
+      source: "RemoteOK",
+      postedAt: j.date ? Date.parse(j.date) || undefined : undefined,
+      tags: j.tags,
     }));
 }
 
@@ -178,6 +372,8 @@ const FREE_JOB_SOURCES: { name: string; fetch: () => Promise<JobCandidate[]> }[]
   { name: "Remotive", fetch: fetchFromRemotive },
   { name: "Arbeitnow", fetch: fetchFromArbeitnow },
   { name: "RemoteOK", fetch: fetchFromRemoteOk },
+  { name: "Jobicy", fetch: fetchFromJobicy },
+  { name: "Himalayas", fetch: fetchFromHimalayas },
 ];
 
 /**
@@ -205,16 +401,30 @@ async function fetchLiveJobs(
       // ignore — free sources are the backbone
     }
   }
-  const seen = new Set<string>();
+  // Clean HTML entities some boards leave in names/titles.
+  for (const job of candidates) {
+    job.title = decodeEntities(job.title).trim();
+    job.company = decodeEntities(job.company).trim();
+    job.location = decodeEntities(job.location).trim();
+  }
+  // Dedupe by URL AND by title+company (some boards cross-post).
+  const seenUrl = new Set<string>();
+  const seenRole = new Set<string>();
   const unique = candidates.filter((job) => {
-    if (!job.url) return true;
-    if (seen.has(job.url)) return false;
-    seen.add(job.url);
+    if (job.url) {
+      if (seenUrl.has(job.url)) return false;
+      seenUrl.add(job.url);
+    }
+    const key = `${job.title.toLowerCase()}@${job.company.toLowerCase()}`;
+    if (seenRole.has(key)) return false;
+    seenRole.add(key);
     return true;
   });
   return unique
+    // Only jobs a fresher can actually get, ranked best-first.
+    .filter(isFresherFriendly)
     .map((job) => ({ job, score: scoreJob(job, targetRoles, skills) }))
-    .filter(({ score }) => score > 0)
+    .filter(({ score }) => score >= 3)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map(({ job }) => job);
@@ -349,7 +559,7 @@ async function runEngineHandler(ctx: ActionCtx, args: { limit?: number }): Promi
   if (!profile || roles.length === 0) {
     return { ran: false, reason: "Add your details (or upload your resume) first — the engine needs to know who you are.", created: 0 };
   }
-  const limit = args.limit ?? 10;
+  const limit = args.limit ?? 25;
   let jobs: JobCandidate[] = [];
   let mode: "live" | "demo" = "live";
   try {
@@ -365,17 +575,29 @@ async function runEngineHandler(ctx: ActionCtx, args: { limit?: number }): Promi
     return { ran: false, reason: "No matching jobs found this run.", created: 0 };
   }
 
-  // Live mode flags jobs as "matched" (review + submit from the listing link).
-  // Demo mode simulates submitted applications so the tracker stays alive.
-  const status: "matched" | "applied" = mode === "live" ? "matched" : "applied";
+  // Auto-apply: when the student enabled it (default ON), applications go out
+  // immediately — no per-job approval step. Otherwise they queue as "matched"
+  // for review.
+  const status: "matched" | "applied" = profile.autoApplyEnabled === false ? "matched" : "applied";
+  const toRecord = (j: JobCandidate) => ({
+    jobTitle: j.title,
+    company: j.company,
+    location: j.location,
+    sourceUrl: j.url,
+    status,
+    employmentType:
+      j.employmentType ?? (/intern/i.test(j.title) ? "Internship" : undefined),
+    seniority: /intern/i.test(j.title)
+      ? "Internship"
+      : FRESH_SIGNALS.some((re) => re.test(j.title))
+        ? "Entry"
+        : undefined,
+    sponsorship: sponsorshipFrom(`${j.title} ${j.haystack}`) || undefined,
+    postedAt: j.postedAt,
+    board: j.source,
+  });
   const { created, ids } = await ctx.runMutation(api.applications.recordMany, {
-    jobs: jobs.map((j) => ({
-      jobTitle: j.title,
-      company: j.company,
-      location: j.location,
-      sourceUrl: j.url,
-      status,
-    })),
+    jobs: jobs.map(toRecord),
   });
   // Build a tailored resume for every newly recorded job, from the student's
   // profile + source documents, so each application ships with a
@@ -435,16 +657,18 @@ async function engineDailyHandler(ctx: ActionCtx): Promise<{ ran: true; created:
     let jobs: JobCandidate[] = [];
     let mode: "live" | "demo" = "live";
     try {
-      jobs = await fetchLiveJobs(roles, profile.skills ?? [], profile.location ?? undefined, 10);
+      jobs = await fetchLiveJobs(roles, profile.skills ?? [], profile.location ?? undefined, 15);
     } catch {
       jobs = [];
     }
     if (jobs.length === 0) {
-      jobs = matchDemoJobs(roles, profile.skills ?? [], 10);
+      jobs = matchDemoJobs(roles, profile.skills ?? [], 15);
       mode = "demo";
     }
     if (jobs.length === 0) continue;
-    const status: "matched" | "applied" = mode === "live" ? "matched" : "applied";
+    // The cron only runs for students who enabled auto-apply, so it always
+    // applies immediately — no approval step.
+    const status: "matched" | "applied" = "applied";
     const { created, ids } = await ctx.runMutation(api.applications.recordManyForUser, {
       userId: profile.userId,
       jobs: jobs.map((j) => ({
@@ -453,6 +677,16 @@ async function engineDailyHandler(ctx: ActionCtx): Promise<{ ran: true; created:
         location: j.location,
         sourceUrl: j.url,
         status,
+        employmentType:
+          j.employmentType ?? (/intern/i.test(j.title) ? "Internship" : undefined),
+        seniority: /intern/i.test(j.title)
+          ? "Internship"
+          : FRESH_SIGNALS.some((re) => re.test(j.title))
+            ? "Entry"
+            : undefined,
+        sponsorship: sponsorshipFrom(`${j.title} ${j.haystack}`) || undefined,
+        postedAt: j.postedAt,
+        board: j.source,
       })),
     });
     if (created === 0) continue;

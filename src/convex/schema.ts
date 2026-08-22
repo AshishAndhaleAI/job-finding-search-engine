@@ -68,6 +68,12 @@ export default defineSchema({
     sourceUrl: v.optional(v.string()),
     source: v.union(v.literal("engine"), v.literal("manual")),
     status: applicationStatus,
+    // Rich posting details captured by the engine when it found the job.
+    employmentType: v.optional(v.string()), // Full-time / Internship / Contract / Part-time
+    seniority: v.optional(v.string()),      // Entry / Internship
+    sponsorship: v.optional(v.boolean()),   // posting mentions visa sponsorship
+    postedAt: v.optional(v.number()),       // when the employer posted it
+    board: v.optional(v.string()),          // which job board it came from
     createdAt: v.number(),
     appliedAt: v.optional(v.number()),
     // Tailored resume the engine built for this specific job posting.
