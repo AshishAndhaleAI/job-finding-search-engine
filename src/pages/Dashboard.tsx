@@ -628,6 +628,11 @@ function ProfileTab() {
   const pushChunk = useMutation(api.uploads.pushUploadChunk);
   const finalizeUpload = useAction(api.uploads.finalizeChunkedUpload);
   const scanResume = useAction(api.resume.parseResume);
+  const getEmailConfig = useAction(api.email.getConfigStatus);
+  const [emailConfig, setEmailConfig] = useState<{ configured: boolean } | null>(null);
+  useEffect(() => {
+    void getEmailConfig().then(setEmailConfig).catch(() => setEmailConfig({ configured: false }));
+  }, [getEmailConfig]);
 
   const [fullName, setFullName] = useState("");
   const [headline, setHeadline] = useState("");
@@ -1055,11 +1060,31 @@ function ProfileTab() {
             <CardDescription>How aggressive should the engine be?</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="flex items-start justify-between gap-4 rounded-lg border border-border bg-muted/40 p-4">
+              <span>
+                <span className="block text-sm font-medium">Application emails</span>
+                {emailConfig?.configured ? (
+                  <span className="mt-0.5 block text-xs text-emerald-500">
+                    ● Active — real applications are emailed with your resume; companies reply to your inbox.
+                  </span>
+                ) : (
+                  <span className="mt-0.5 block text-xs text-amber-500">
+                    ● Not configured — add BREVO_API_KEY + EMAIL_FROM (free, brevo.com) in the Keys tab to switch on real email applications.
+                  </span>
+                )}
+              </span>
+              <span
+                className={cn(
+                  "mt-0.5 size-2.5 shrink-0 rounded-full",
+                  emailConfig?.configured ? "bg-emerald-500" : "bg-amber-500",
+                )}
+              />
+            </div>
             <label className="flex cursor-pointer items-start justify-between gap-4 rounded-lg border border-border bg-muted/40 p-4">
               <span>
-                <span className="block text-sm font-medium">Auto-apply (daily cron)</span>
+                <span className="block text-sm font-medium">Auto-apply (hourly sweeps)</span>
                 <span className="mt-0.5 block text-xs text-muted-foreground">
-                  The engine searches and applies every 24 hours without you lifting a finger.
+                  The engine hunts and applies every hour without you lifting a finger.
                 </span>
               </span>
               <input

@@ -879,15 +879,24 @@ async function runEngineHandler(ctx: ActionCtx, args: { limit?: number }): Promi
     if (applyEmail && studentEmail && mode === "live") {
       const tailored = buildTailoredResume(profile, { jobTitle: j.title, company: j.company, location: j.location });
       const pdfBytes = buildTextPdf(tailored.split("\n"));
+      const sig = [
+        profile.fullName ? `<b>${escapeHtml(profile.fullName)}</b>` : null,
+        profile.headline ? escapeHtml(profile.headline) : null,
+        studentEmail ? escapeHtml(studentEmail) : null,
+        profile.phone ? `Phone: ${escapeHtml(profile.phone)}` : null,
+        profile.location ? `Location: ${escapeHtml(profile.location)}` : null,
+      ].filter(Boolean).join(" <br/>");
       const sent = await ctx.runAction(api.email.sendDigest, {
         to: applyEmail,
         subject: `Application: ${j.title} — ${profile.fullName ?? "Fresher candidate"}`,
         html:
           `<p>Dear Hiring Team,</p>` +
-          `<p>I am applying for the <b>${escapeHtml(j.title)}</b> role at ${escapeHtml(j.company)}. ` +
-          `I am a fresher (0 experience) actively looking to start my career${profile.location ? ` and based in ${escapeHtml(profile.location)}` : ""}.</p>` +
-          `<p>My tailored resume is attached. I would welcome the chance to interview at your convenience.</p>` +
-          `<p>Thank you for your time,<br/>${escapeHtml(profile.fullName ?? "Candidate")}${studentEmail ? ` · ${escapeHtml(studentEmail)}` : ""}</p>`,
+          `<p>I am writing to apply for the <b>${escapeHtml(j.title)}</b> position at ${escapeHtml(j.company)}. ` +
+          `As a fresher eager to begin my career, I have tailored my resume to the skills this role values` +
+          `${profile.location ? ` and I am based in ${escapeHtml(profile.location)}, ready to contribute from day one` : ""}.</p>` +
+          `<p>My resume is attached for your review. I would greatly appreciate the opportunity to interview at your convenience and demonstrate my motivation in person.</p>` +
+          `<p>Thank you for your time and consideration.</p>` +
+          `<p style=\"margin-top:16px\">${sig}</p>`,
         replyTo: studentEmail,
         attachmentName: `${(profile.fullName ?? "Resume").replace(/[^\w]+/g, "_")}_${j.title.replace(/[^\w]+/g, "_").slice(0, 30)}.pdf`,
         attachmentBase64: bytesToBase64(pdfBytes),

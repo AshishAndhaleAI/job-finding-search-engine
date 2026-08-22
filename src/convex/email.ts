@@ -2,6 +2,18 @@ import { action } from "./_generated/server";
 import { v } from "convex/values";
 
 /**
+ * Whether real email sending is configured. Exposes NO secret values — just a
+ * boolean so the UI can tell the student honestly if applications will be
+ * emailed or need one-click submission.
+ */
+export const getConfigStatus = action({
+  args: {},
+  handler: async () => {
+    return { configured: Boolean(process.env.BREVO_API_KEY && process.env.EMAIL_FROM) };
+  },
+});
+
+/**
  * Send a transactional email via Brevo (https://brevo.com) — free plan: up to
  * 300 emails/day, no credit card required. Requires BREVO_API_KEY and
  * EMAIL_FROM to be set (Freebuff Keys tab); returns { sent: false, reason }
