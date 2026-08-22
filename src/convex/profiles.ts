@@ -112,3 +112,39 @@ export const getResumeUrl = query({
     return await ctx.storage.getUrl(profile.resumeStorageId);
   },
 });
+
+/** Record a completed engine sweep for the dashboard's live status panel. */
+export const markEngineRun = mutation({
+  args: { found: v.number() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return;
+    const profile = await ctx.db
+      .query("profiles")
+      .withIndex("userId", (q) => q.eq("userId", userId))
+      .first();
+    if (!profile) return;
+    await ctx.db.patch(profile._id, {
+      lastEngineRunAt: Date.now(),
+      lastRunFound: args.found,
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+/** Internal variant used by the continuous cron sweep. */
+export const markEngineRunForUser = mutation({
+  args: { userId: v.id("users"), found: v.number() },
+  handler: async (ctx, args) => {
+    const profile = await ctx.db
+      .query("profiles")
+      .withIndex("userId", (q) => q.eq("userId", args.userId))
+      .first();
+    if (!profile) return;
+    await ctx.db.patch(profile._id, {
+      lastEngineRunAt: Date.now(),
+      lastRunFound: args.found,
+      updatedAt: Date.now(),
+    });
+  },
+});

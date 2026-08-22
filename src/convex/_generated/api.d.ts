@@ -15,6 +15,7 @@ import type * as email from "../email.js";
 import type * as engine from "../engine.js";
 import type * as http from "../http.js";
 import type * as notifications from "../notifications.js";
+import type * as pdf from "../pdf.js";
 import type * as profiles from "../profiles.js";
 import type * as resume from "../resume.js";
 import type * as resumeGen from "../resumeGen.js";
@@ -37,6 +38,7 @@ declare const fullApi: ApiFromModules<{
   engine: typeof engine;
   http: typeof http;
   notifications: typeof notifications;
+  pdf: typeof pdf;
   profiles: typeof profiles;
   resume: typeof resume;
   resumeGen: typeof resumeGen;

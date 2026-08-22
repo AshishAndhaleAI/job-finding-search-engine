@@ -215,13 +215,9 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
     try {
       const res = await runEngine({});
       if (res.ran) {
-        setResult({
-          ok: true,
-          message:
-            res.mode === "live"
-              ? `Engine matched ${res.created} new jobs. Review them in Applications.`
-              : `Engine applied to ${res.created} demo jobs. The free job boards were unreachable — try again later.`,
-        });
+        setResult({ ok: true, message: res.created > 0
+          ? `Done — ${res.created} new jobs processed. Check Applications and your inbox.`
+          : "Sweep complete — no new jobs beyond what you already have. Next sweep continues automatically." });
       } else {
         setResult({ ok: false, message: res.reason });
       }
@@ -231,6 +227,19 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
       setRunning(false);
     }
   }
+
+  // Live engine status: the continuous hunt sweeps every hour on its own.
+  const lastRunAgoMin = profile?.lastEngineRunAt
+    ? Math.max(0, Math.round((Date.now() - profile.lastEngineRunAt) / 60000))
+    : null;
+  const lastRunText =
+    lastRunAgoMin === null
+      ? "first sweep hasn't run yet"
+      : lastRunAgoMin < 1
+        ? "sweeping right now"
+        : lastRunAgoMin < 60
+          ? `last sweep ${lastRunAgoMin} min ago`
+          : `last sweep ${Math.round(lastRunAgoMin / 60)}h ago`;
 
   return (
     <div className="space-y-6">
@@ -296,10 +305,24 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Radar className="size-4 text-primary" /> Engine status
+              <Radar className="size-4 text-primary" /> Continuous job hunt
             </CardTitle>
-            <CardDescription>What the engine needs to start applying.</CardDescription>
+            <CardDescription>The engine sweeps every hour — finding and applying for you.</CardDescription>
           </CardHeader>
+          <CardContent className="mb-1">
+            <div className="flex items-center justify-between rounded-lg border border-primary/30 bg-primary/5 px-3.5 py-3">
+              <div className="flex items-center gap-2.5 text-sm">
+                <span className="relative flex size-2.5">
+                  <span className="absolute inline-flex size-full animate-ping rounded-full bg-accent opacity-60" />
+                  <span className="relative inline-flex size-2.5 rounded-full bg-accent" />
+                </span>
+                <span className="font-medium">Hunting continuously · {lastRunText}</span>
+              </div>
+              {typeof profile?.lastRunFound === "number" && (
+                <span className="text-xs text-muted-foreground">+{profile.lastRunFound} last sweep</span>
+              )}
+            </div>
+          </CardContent>
           <CardContent className="space-y-3">
             {[
               { done: Boolean(profile?.targetRoles?.length), label: "Target roles set" },
@@ -320,7 +343,7 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
             ))}
             <p className="pt-1 text-xs text-muted-foreground">
               {profile?.autoApplyEnabled
-                ? "Auto-apply is ON — the engine runs daily and applies for you."
+                ? "Auto-apply is ON — every hour the engine applies with your data; email applications carry your resume and replies land in your inbox."
                 : "Auto-apply is OFF — run the engine manually from here."}
             </p>
           </CardContent>
@@ -502,7 +525,14 @@ function ApplicationsTab() {
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    {app.sourceUrl && (
+                    {app.status === "applying" && app.sourceUrl && (
+                      <Button size="sm" asChild>
+                        <a href={app.sourceUrl} target="_blank" rel="noreferrer">
+                          Submit now <ExternalLink className="size-3.5" />
+                        </a>
+                      </Button>
+                    )}
+                    {app.sourceUrl && app.status !== "applying" && (
                       <Button variant="outline" size="sm" asChild>
                         <a href={app.sourceUrl} target="_blank" rel="noreferrer">
                           Visit <ExternalLink className="size-3.5" />

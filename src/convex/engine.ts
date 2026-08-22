@@ -3,6 +3,8 @@ import { v } from "convex/values";
 import { api } from "./_generated/api";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { rolesFromSkills } from "./roleMap";
+import { buildTailoredResume } from "./resumeGen";
+import { buildTextPdf, bytesToBase64 } from "./pdf";
 
 type JobCandidate = {
   title: string;
@@ -14,6 +16,7 @@ type JobCandidate = {
   employmentType?: string; // "Full-time" | "Internship" | "Contract" | "Part-time"
   postedAt?: number; // epoch ms when the employer posted it
   tags?: string[];
+  description?: string; // posting text (used to find application emails)
 };
 
 /* ---------------------------------------------------------------------------
@@ -54,8 +57,7 @@ const FRESH_SIGNALS: RegExp[] = [
   /\bapprentice\b/i,
 ];
 
-/** Vague aggregator posts that aren't real, specific openings. */
-const JUNK_TITLE_BLOCK: RegExp[] = [
+/** Vague aggregator posts that aren't real, specific openings. */const JUNK_TITLE_BLOCK: RegExp[] = [
   /^open positions?$/i,
   /^multiple (positions|roles|openings)$/i,
   /^various /i,
@@ -216,6 +218,27 @@ function sponsorshipFrom(text: string): boolean {
   return /visa spons|sponsori|work visa|h-1b|h1b|relocation support/i.test(text);
 }
 
+/** Pull a real application email out of the posting text, if the employer
+ *  accepts applications by email. Skips no-reply / system addresses. */
+export function extractApplyEmail(text: string): string | undefined {
+  const matches = text.match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) ?? [];
+  const skip = /noreply|no-reply|donotreply|example\.(com|org)|sentry|wixpress|@2x|\.png|\.jpg/i;
+  const hit = matches.find((e) => !skip.test(e));
+  return hit ? hit.toLowerCase() : undefined;
+}
+
+function stripHtml(html?: string | null): string | undefined {
+  if (!html) return undefined;
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim() || undefined;
+}
+
 async function fetchFromRemotive(): Promise<JobCandidate[]> {
   const res = await fetch("https://remotive.com/api/remote-jobs?limit=100");
   if (!res.ok) throw new Error(`Remotive HTTP ${res.status}`);
@@ -228,6 +251,7 @@ async function fetchFromRemotive(): Promise<JobCandidate[]> {
       tags?: string[];
       job_type?: string | null;
       publication_date?: string | null;
+      description?: string | null;
     }>;
   };
   return (data.jobs ?? []).map((j) => ({
@@ -237,6 +261,7 @@ async function fetchFromRemotive(): Promise<JobCandidate[]> {
     url: j.url,
     haystack: [j.title, j.company_name, ...(j.tags ?? [])].filter(Boolean).join(" "),
     source: "Remotive",
+    description: stripHtml(j.description),
     employmentType: normalizeEmploymentType(j.job_type),
     postedAt: j.publication_date ? Date.parse(j.publication_date) || undefined : undefined,
     tags: j.tags,
@@ -255,6 +280,7 @@ async function fetchArbeitnowPage(page: number): Promise<JobCandidate[]> {
       tags?: string[];
       job_types?: string[] | null;
       created_at?: number | null; // unix seconds
+      description?: string | null;
     }>;
   };
   return (data.data ?? []).map((j) => ({
@@ -264,6 +290,7 @@ async function fetchArbeitnowPage(page: number): Promise<JobCandidate[]> {
     url: j.url,
     haystack: [j.title, j.company_name, j.location, ...(j.tags ?? [])].filter(Boolean).join(" "),
     source: "Arbeitnow",
+    description: stripHtml(j.description),
     employmentType: normalizeEmploymentType(j.job_types?.[0]),
     postedAt: j.created_at ? j.created_at * 1000 : undefined,
     tags: j.tags,
@@ -578,27 +605,90 @@ async function runEngineHandler(ctx: ActionCtx, args: { limit?: number }): Promi
   // Auto-apply: when the student enabled it (default ON), applications go out
   // immediately — no per-job approval step. Otherwise they queue as "matched"
   // for review.
-  const status: "matched" | "applied" = profile.autoApplyEnabled === false ? "matched" : "applied";
-  const toRecord = (j: JobCandidate) => ({
-    jobTitle: j.title,
-    company: j.company,
-    location: j.location,
-    sourceUrl: j.url,
-    status,
-    employmentType:
-      j.employmentType ?? (/intern/i.test(j.title) ? "Internship" : undefined),
-    seniority: /intern/i.test(j.title)
-      ? "Internship"
-      : FRESH_SIGNALS.some((re) => re.test(j.title))
-        ? "Entry"
-        : undefined,
-    sponsorship: sponsorshipFrom(`${j.title} ${j.haystack}`) || undefined,
-    postedAt: j.postedAt,
-    board: j.source,
-  });
+  const auto = profile.autoApplyEnabled !== false;
+
+  const me = await ctx.runQuery(api.users.getMe, {});
+  const studentEmail: string | undefined = me?.email ?? undefined;
+
+  // REAL applications: for postings that accept email applications, send a
+  // genuine application email (tailored resume attached, Reply-To = student)
+  // so companies respond straight to the student's inbox.
+  let emailSent = 0;
+  let emailFailed = 0;
+  const toRecord = (j: JobCandidate) => {
+    const applyEmail = extractApplyEmail(`${j.haystack} ${j.description ?? ""}`);
+    return { j, applyEmail };
+  };
+
+  const prepared = [] as Array<
+    JobCandidate & { status: "matched" | "applying" | "applied"; employmentType?: string; seniority?: string; sponsorship?: boolean; postedAt?: number; board?: string }
+  >;
+  for (const { j, applyEmail } of jobs.map(toRecord)) {
+    const base = {
+      employmentType:
+        j.employmentType ?? (/intern/i.test(j.title) ? "Internship" : undefined),
+      seniority: /intern/i.test(j.title)
+        ? "Internship"
+        : FRESH_SIGNALS.some((re) => re.test(j.title))
+          ? "Entry"
+          : undefined,
+      sponsorship: sponsorshipFrom(`${j.title} ${j.haystack}`) || undefined,
+      postedAt: j.postedAt,
+      board: j.source,
+    };
+    if (!auto) {
+      prepared.push({ ...j, ...base, status: "matched" });
+      continue;
+    }
+    if (applyEmail && studentEmail && mode === "live") {
+      const tailored = buildTailoredResume(profile, { jobTitle: j.title, company: j.company, location: j.location });
+      const pdfBytes = buildTextPdf(tailored.split("\n"));
+      const sent = await ctx.runAction(api.email.sendDigest, {
+        to: applyEmail,
+        subject: `Application: ${j.title} — ${profile.fullName ?? "Fresher candidate"}`,
+        html:
+          `<p>Dear Hiring Team,</p>` +
+          `<p>I am applying for the <b>${escapeHtml(j.title)}</b> role at ${escapeHtml(j.company)}. ` +
+          `I am a fresher (0 experience) actively looking to start my career${profile.location ? ` and based in ${escapeHtml(profile.location)}` : ""}.</p>` +
+          `<p>My tailored resume is attached. I would welcome the chance to interview at your convenience.</p>` +
+          `<p>Thank you for your time,<br/>${escapeHtml(profile.fullName ?? "Candidate")}${studentEmail ? ` · ${escapeHtml(studentEmail)}` : ""}</p>`,
+        replyTo: studentEmail,
+        attachmentName: `${(profile.fullName ?? "Resume").replace(/[^\w]+/g, "_")}_${j.title.replace(/[^\w]+/g, "_").slice(0, 30)}.pdf`,
+        attachmentBase64: bytesToBase64(pdfBytes),
+      });
+      if (sent.sent) {
+        emailSent++;
+        prepared.push({ ...j, ...base, status: "applied" });
+        continue;
+      }
+      emailFailed++;
+    }
+    // Portal job (or email sending not configured): engine prepared everything,
+    // the posting opens pre-filled with one click on Submit.
+    prepared.push({ ...j, ...base, status: "applying" });
+  }
+
   const { created, ids } = await ctx.runMutation(api.applications.recordMany, {
-    jobs: jobs.map(toRecord),
+    jobs: prepared.map((j) => ({
+      jobTitle: j.title,
+      company: j.company,
+      location: j.location,
+      sourceUrl: j.url,
+      status: j.status,
+      employmentType: j.employmentType,
+      seniority: j.seniority,
+      sponsorship: j.sponsorship,
+      postedAt: j.postedAt,
+      board: j.board,
+    })),
   });
+
+  // Live engine status for the dashboard panel.
+  await ctx.runMutation(api.profiles.markEngineRun, { found: created });
+
+  // Real submissions summary: how many went out as genuine application emails.
+  const submittedCount = prepared.filter((j) => j.status === "applied").length;
+  const readyCount = prepared.filter((j) => j.status === "applying").length;
   // Build a tailored resume for every newly recorded job, from the student's
   // profile + source documents, so each application ships with a
   // job-specific resume.
@@ -609,21 +699,35 @@ async function runEngineHandler(ctx: ActionCtx, args: { limit?: number }): Promi
     items: [
       {
         kind: "application_submitted",
-        title: mode === "live" ? `Engine matched ${created} new jobs` : `Engine applied to ${created} demo jobs`,
-        body: mode === "live"
-          ? "Review them and submit from the Applications tab."
-          : "Live job sources were unreachable — showing demo jobs. Try again later.",
+        title:
+          submittedCount > 0
+            ? `Applied to ${submittedCount} jobs — ${readyCount} ready`
+            : mode === "live"
+              ? `Engine found ${created} new jobs`
+              : `Engine applied to ${created} demo jobs`,
+        body:
+          submittedCount > 0
+            ? `${submittedCount} application emails were sent with your resume — replies land in your inbox. ${readyCount > 0 ? `${readyCount} portal jobs are one-click Submit.` : ""}`
+            : mode === "live"
+              ? "They are pre-filled and ready on the Applications tab — hit Submit."
+              : "Live job sources were unreachable — showing demo jobs. Try again later.",
       },
     ],
   });
 
+  // Immediate receipt to the student's own inbox after every sweep.
   let email: ChannelResult | null = null;
-  if (profile.emailDigestEnabled) {
-    const me = await ctx.runQuery(api.users.getMe, {});
-    if (me?.email) {
+  {
+    const me2 = await ctx.runQuery(api.users.getMe, {});
+    if (me2?.email) {
       email = await ctx.runAction(api.email.sendDigest, {
-        to: me.email,
-        subject: mode === "live" ? `FirstStep: ${created} new jobs matched` : `FirstStep: ${created} applications submitted`,
+        to: me2.email,
+        subject:
+          submittedCount > 0
+            ? `FirstStep applied to ${submittedCount} jobs for you (+${readyCount} ready)`
+            : mode === "live"
+              ? `FirstStep found ${created} new jobs for you`
+              : `FirstStep: ${created} applications submitted`,
         html: digestHtml(jobs, mode, created),
       });
     }
@@ -657,26 +761,26 @@ async function engineDailyHandler(ctx: ActionCtx): Promise<{ ran: true; created:
     let jobs: JobCandidate[] = [];
     let mode: "live" | "demo" = "live";
     try {
-      jobs = await fetchLiveJobs(roles, profile.skills ?? [], profile.location ?? undefined, 15);
+      jobs = await fetchLiveJobs(roles, profile.skills ?? [], profile.location ?? undefined, 20);
     } catch {
       jobs = [];
     }
     if (jobs.length === 0) {
-      jobs = matchDemoJobs(roles, profile.skills ?? [], 15);
+      jobs = matchDemoJobs(roles, profile.skills ?? [], 20);
       mode = "demo";
     }
     if (jobs.length === 0) continue;
-    // The cron only runs for students who enabled auto-apply, so it always
-    // applies immediately — no approval step.
-    const status: "matched" | "applied" = "applied";
-    const { created, ids } = await ctx.runMutation(api.applications.recordManyForUser, {
-      userId: profile.userId,
-      jobs: jobs.map((j) => ({
-        jobTitle: j.title,
-        company: j.company,
-        location: j.location,
-        sourceUrl: j.url,
-        status,
+
+    // The cron only runs for students who enabled auto-apply — apply for real:
+    // email applications go out with the tailored resume attached.
+    const me = await ctx.runQuery(api.users.getUserById, { userId: profile.userId });
+    const studentEmail: string | undefined = me?.email ?? undefined;
+    let submittedCount = 0;
+    const preparedCron = [] as Array<
+      JobCandidate & { status: "applying" | "applied"; employmentType?: string; seniority?: string; sponsorship?: boolean; postedAt?: number; board?: string }
+    >;
+    for (const j of jobs) {
+      const base = {
         employmentType:
           j.employmentType ?? (/intern/i.test(j.title) ? "Internship" : undefined),
         seniority: /intern/i.test(j.title)
@@ -687,7 +791,47 @@ async function engineDailyHandler(ctx: ActionCtx): Promise<{ ran: true; created:
         sponsorship: sponsorshipFrom(`${j.title} ${j.haystack}`) || undefined,
         postedAt: j.postedAt,
         board: j.source,
+      };
+      const applyEmail = extractApplyEmail(`${j.haystack} ${j.description ?? ""}`);
+      if (mode === "live" && applyEmail && studentEmail) {
+        const tailored = buildTailoredResume(profile, { jobTitle: j.title, company: j.company, location: j.location });
+        const sent = await ctx.runAction(api.email.sendDigest, {
+          to: applyEmail,
+          subject: `Application: ${j.title} — ${profile.fullName ?? "Fresher candidate"}`,
+          html:
+            `<p>Dear Hiring Team,</p>` +
+            `<p>I am applying for the <b>${escapeHtml(j.title)}</b> role at ${escapeHtml(j.company)}. ` +
+            `I am a fresher actively looking to start my career.</p>` +
+            `<p>My tailored resume is attached. Thank you for your time,<br/>${escapeHtml(profile.fullName ?? "Candidate")}${studentEmail ? ` · ${escapeHtml(studentEmail)}` : ""}</p>`,
+          replyTo: studentEmail,
+          attachmentName: `${(profile.fullName ?? "Resume").replace(/[^\w]+/g, "_")}_Resume.pdf`,
+          attachmentBase64: bytesToBase64(buildTextPdf(tailored.split("\n"))),
+        });
+        if (sent.sent) submittedCount++;
+        preparedCron.push({ ...j, ...base, status: sent.sent ? "applied" : "applying" });
+        continue;
+      }
+      preparedCron.push({ ...j, ...base, status: "applying" });
+    }
+
+    const { created, ids } = await ctx.runMutation(api.applications.recordManyForUser, {
+      userId: profile.userId,
+      jobs: preparedCron.map((j) => ({
+        jobTitle: j.title,
+        company: j.company,
+        location: j.location,
+        sourceUrl: j.url,
+        status: j.status,
+        employmentType: j.employmentType,
+        seniority: j.seniority,
+        sponsorship: j.sponsorship,
+        postedAt: j.postedAt,
+        board: j.board,
       })),
+    });
+    await ctx.runMutation(api.profiles.markEngineRunForUser, {
+      userId: profile.userId,
+      found: created,
     });
     if (created === 0) continue;
     // Tailored resume per job, generated from the student's profile + documents.
@@ -703,10 +847,18 @@ async function engineDailyHandler(ctx: ActionCtx): Promise<{ ran: true; created:
       items: [
         {
           kind: "application_submitted",
-          title: mode === "live" ? `Engine matched ${created} new jobs` : `Engine applied to ${created} demo jobs`,
-          body: mode === "live"
-            ? "Review them and submit from the Applications tab."
-            : "Live job sources were unreachable — showing demo jobs. Try again later.",
+          title:
+            submittedCount > 0
+              ? `Applied to ${submittedCount} new jobs while you were away`
+              : mode === "live"
+                ? `Engine found ${created} new jobs`
+                : `Engine applied to ${created} demo jobs`,
+          body:
+            submittedCount > 0
+              ? `${submittedCount} real application emails sent from your profile — replies land in your inbox.`
+              : mode === "live"
+                ? "They are pre-filled and ready — hit Submit on the Applications tab."
+                : "Live boards were unreachable — showing demo jobs.",
         },
       ],
     });

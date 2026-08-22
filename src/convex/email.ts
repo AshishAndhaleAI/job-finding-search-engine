@@ -12,12 +12,30 @@ import { v } from "convex/values";
  * the Brevo dashboard before it will deliver mail.
  */
 export const sendDigest = action({
-  args: { to: v.string(), subject: v.string(), html: v.string() },
+  args: {
+    to: v.string(),
+    subject: v.string(),
+    html: v.string(),
+    // Optional real-application fields:
+    replyTo: v.optional(v.string()),   // companies reply straight to the student
+    attachmentName: v.optional(v.string()),
+    attachmentBase64: v.optional(v.string()), // e.g. tailored resume PDF
+  },
   handler: async (_ctx, args) => {
     const apiKey = process.env.BREVO_API_KEY;
     const from = process.env.EMAIL_FROM;
     if (!apiKey) return { sent: false, reason: "BREVO_API_KEY is not set" };
     if (!from) return { sent: false, reason: "EMAIL_FROM is not set" };
+    const body: Record<string, unknown> = {
+      sender: { email: from },
+      to: [{ email: args.to }],
+      subject: args.subject,
+      htmlContent: args.html,
+    };
+    if (args.replyTo) body.replyTo = { email: args.replyTo };
+    if (args.attachmentName && args.attachmentBase64) {
+      body.attachment = [{ name: args.attachmentName, content: args.attachmentBase64 }];
+    }
     const res = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",
       headers: {
@@ -25,12 +43,7 @@ export const sendDigest = action({
         Accept: "application/json",
         "api-key": apiKey,
       },
-      body: JSON.stringify({
-        sender: { email: from },
-        to: [{ email: args.to }],
-        subject: args.subject,
-        htmlContent: args.html,
-      }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");

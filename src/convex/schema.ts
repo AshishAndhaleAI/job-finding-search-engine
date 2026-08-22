@@ -55,6 +55,9 @@ export default defineSchema({
     // the student's number in E.164 format, e.g. +15551234567.
     phone: v.optional(v.string()),
     whatsappEnabled: v.optional(v.boolean()),
+    // Live engine status shown on the dashboard.
+    lastEngineRunAt: v.optional(v.number()), // epoch ms of the last sweep
+    lastRunFound: v.optional(v.number()),    // new jobs found in that sweep
     createdAt: v.number(),
     updatedAt: v.number(),
   }).index("userId", ["userId"]),
