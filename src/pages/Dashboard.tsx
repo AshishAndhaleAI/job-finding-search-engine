@@ -61,45 +61,28 @@ function formatDate(ts: number): string {
   return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-/** Upload a file via fetch with progress tracking. Returns the storageId string. */
-function uploadToConvexStorage(
-  uploadUrl: string,
-  file: File,
-  onProgress: (p: number) => void,
-): Promise<string> {
-  // The Convex backend returns a URL like http://127.0.0.1:3210/api/storage/upload?token=...
-  // The browser can't reach that. Rewrite to same-origin so Vite proxies it.
-  const sameOriginUrl = rewriteConvexUrl(uploadUrl, { sameOrigin: true });
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", sameOriginUrl);
-    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
-    xhr.timeout = 90000;
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) onProgress(e.loaded / e.total);
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        // Convex storage returns {"storageId":"..."} in the response body
-        try {
-          const data = JSON.parse(xhr.responseText);
-          if (data.storageId) { resolve(data.storageId); return; }
-        } catch { /* not JSON */ }
-        // Fallback: treat the whole response as the storageId
-        const body = xhr.responseText.trim();
-        if (body && body.length > 0 && !body.startsWith("<")) {
-          resolve(body);
-          return;
-        }
-        reject(new Error("Upload succeeded but could not identify the storage ID."));
-      } else {
-        reject(new Error(`Upload failed (HTTP ${xhr.status}).`));
-      }
-    };
-    xhr.onerror = () => reject(new Error("Network error — check your connection and try again."));
-    xhr.ontimeout = () => reject(new Error("Upload timed out. Try a smaller file."));
-    xhr.send(file);
-  });
+/**
+ * Read a File in the browser and split it into base64 chunks. The chunks are
+ * then sent through the normal Convex mutation channel — the same transport as
+ * every other request the app makes, so there is no separate upload endpoint,
+ * no signed URL and no CORS/proxy hop left to fail.
+ */
+async function fileToBase64Chunks(file: File): Promise<string[]> {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  // Build the binary string in slices (String.fromCharCode has arg limits).
+  let binary = "";
+  const SLICE = 0x8000;
+  for (let i = 0; i < bytes.length; i += SLICE) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + SLICE));
+  }
+  const b64 = btoa(binary);
+  const CHUNK_B64 = 700_000; // chars per mutation (~512 KB of file), divisible by 4
+  const chunks: string[] = [];
+  for (let i = 0; i < b64.length; i += CHUNK_B64) {
+    chunks.push(b64.slice(i, i + CHUNK_B64));
+  }
+  return chunks.length > 0 ? chunks : [btoa("")]; // never send zero chunks
 }
 
 export default function Dashboard() {
@@ -578,7 +561,9 @@ function ProfileTab() {
   const resumeLink = resumeUrl ? rewriteConvexUrl(resumeUrl) : null;
   const upsertProfile = useMutation(api.profiles.upsertProfile);
   const setResume = useMutation(api.profiles.setResume);
-  const generateUploadUrl = useMutation(api.uploads.generateUploadUrl);
+  const beginUpload = useMutation(api.uploads.beginChunkedUpload);
+  const pushChunk = useMutation(api.uploads.pushUploadChunk);
+  const finalizeUpload = useAction(api.uploads.finalizeChunkedUpload);
   const scanResume = useAction(api.resume.parseResume);
 
   const [fullName, setFullName] = useState("");
@@ -648,17 +633,43 @@ function ProfileTab() {
   }
 
   async function uploadFile(file: File) {
+    if (file.size === 0) {
+      setFileName(file.name);
+      setUploadError("That file is empty — please pick your actual resume file.");
+      setUploading(false);
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      setFileName(file.name);
+      setUploadError("File is larger than 20 MB — please upload a smaller version.");
+      setUploading(false);
+      return;
+    }
     setUploading(true);
     setUploadProgress(0);
     setUploadError(null);
     setScanResult(null);
     setFileName(file.name);
     try {
-      // Step 1: get a signed upload URL from Convex storage
-      const uploadUrl = await generateUploadUrl();
-      // Step 2: upload the file to Convex storage (same-origin via Vite proxy)
-      const storageId = await uploadToConvexStorage(uploadUrl, file, (p) => setUploadProgress(p));
-      // Step 3: save the reference to the user's profile
+      // Step 1: read + chunk the file locally in the browser
+      const chunks = await fileToBase64Chunks(file);
+      setUploadProgress(0.05);
+      // Step 2: open an upload session on the backend
+      const sessionId = await beginUpload({
+        fileName: file.name,
+        mimeType: file.type || "application/octet-stream",
+        totalChunks: chunks.length,
+      });
+      // Step 3: push every chunk through the normal request channel
+      for (let i = 0; i < chunks.length; i++) {
+        await pushChunk({ sessionId, index: i, data: chunks[i] });
+        setUploadProgress(0.05 + (0.85 * (i + 1)) / chunks.length);
+      }
+      // Step 4: backend reassembles the file and stores it
+      const result = await finalizeUpload({ sessionId });
+      const storageId = String(result.storageId);
+      setUploadProgress(1);
+      // Step 5: save the reference to the user's profile
       await setResume({ storageId: storageId as Id<"_storage">, fileName: file.name });
       setUploading(false);
       setUploadProgress(null);

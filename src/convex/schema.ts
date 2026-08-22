@@ -91,4 +91,22 @@ export default defineSchema({
     read: v.boolean(),
     createdAt: v.number(),
   }).index("userId", ["userId"]),
+
+  // Chunked file-upload staging. Files travel to the backend through the same
+  // mutation channel as every other request (no binary HTTP endpoints, no
+  // signed upload URLs) in small base64 chunks, then are reassembled into
+  // Convex file storage by uploads.finalizeChunkedUpload.
+  uploadSessions: defineTable({
+    userId: v.id("users"),
+    fileName: v.string(),
+    mimeType: v.string(),
+    totalChunks: v.number(),
+    createdAt: v.number(),
+  }).index("userId", ["userId"]),
+
+  uploadChunks: defineTable({
+    sessionId: v.id("uploadSessions"),
+    index: v.number(),
+    data: v.string(), // base64-encoded piece of the file
+  }).index("sessionId_index", ["sessionId", "index"]),
 });
