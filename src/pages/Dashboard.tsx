@@ -322,6 +322,12 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
                 <span className="text-xs text-muted-foreground">+{profile.lastRunFound} last sweep</span>
               )}
             </div>
+            {(profile?.targetRoles?.length ?? 0) > 0 && (
+              <p className="mt-2 text-[11px] text-muted-foreground/80">
+                Hunting for: <span className="text-foreground">{profile!.targetRoles!.slice(0, 4).join(", ")}</span>
+                {profile!.targetRoles!.length > 4 ? ` +${profile!.targetRoles!.length - 4} more` : ""} across 5 job boards
+              </p>
+            )}
           </CardContent>
           <CardContent className="space-y-3">
             {[

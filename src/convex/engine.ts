@@ -28,8 +28,11 @@ type JobCandidate = {
 const SENIOR_TITLE_BLOCK: RegExp[] = [
   /\bsenior\b/i,
   /\bsr\.?\b/i,
-  /\blead\b/i,
+  /\bleads?\b/i,
+  /\bleader\b/i,
+  /\bleadership\b/i,
   /\bprincipal\b/i,
+  /\bprinciple\b/i, // common misspelling used in postings
   /\bstaff\b/i,
   /\bhead of\b/i,
   /\bdirector\b/i,
@@ -40,6 +43,8 @@ const SENIOR_TITLE_BLOCK: RegExp[] = [
   /\bsupervisor\b/i,
   /\bexperienced\b/i,
   /\bexpert\b/i,
+  /\bintermediate\b/i,
+  /\bmid[- ]level\b/i,
 ];
 
 const FRESH_SIGNALS: RegExp[] = [
@@ -335,6 +340,69 @@ async function fetchFromJobicy(): Promise<JobCandidate[]> {
   }));
 }
 
+/** Targeted Remotive hunt for ONE role — far more relevant than page 1 dumps. */
+async function fetchFromRemotiveRole(role: string): Promise<JobCandidate[]> {
+  const res = await fetch(
+    `https://remotive.com/api/remote-jobs?search=${encodeURIComponent(role)}&limit=40`,
+  );
+  if (!res.ok) throw new Error(`Remotive HTTP ${res.status}`);
+  const data = (await res.json()) as {
+    jobs?: Array<{
+      title?: string;
+      company_name?: string;
+      candidate_required_location?: string | null;
+      url?: string;
+      tags?: string[];
+      job_type?: string | null;
+      publication_date?: string | null;
+      description?: string | null;
+    }>;
+  };
+  return (data.jobs ?? []).map((j) => ({
+    title: j.title ?? "Unknown role",
+    company: j.company_name ?? "Unknown company",
+    location: j.candidate_required_location || "Remote",
+    url: j.url,
+    haystack: [j.title, j.company_name, ...(j.tags ?? [])].filter(Boolean).join(" "),
+    source: "Remotive",
+    description: stripHtml(j.description),
+    employmentType: normalizeEmploymentType(j.job_type),
+    postedAt: j.publication_date ? Date.parse(j.publication_date) || undefined : undefined,
+    tags: j.tags,
+  }));
+}
+
+/** Targeted Jobicy hunt for ONE role via its tag index. */
+async function fetchFromJobicyRole(role: string): Promise<JobCandidate[]> {
+  const res = await fetch(
+    `https://jobicy.com/api/v2/remote-jobs?count=40&tag=${encodeURIComponent(role)}`,
+  );
+  if (!res.ok) throw new Error(`Jobicy HTTP ${res.status}`);
+  const data = (await res.json()) as {
+    jobs?: Array<{
+      url?: string;
+      jobTitle?: string;
+      companyName?: string;
+      jobGeo?: string | null;
+      jobLevel?: string | null;
+      jobType?: string | null;
+      pubDate?: string | null;
+      tags?: string[] | null;
+    }>;
+  };
+  return (data.jobs ?? []).map((j) => ({
+    title: j.jobTitle ?? "Unknown role",
+    company: j.companyName ?? "Unknown company",
+    location: j.jobGeo || "Remote",
+    url: j.url,
+    haystack: [j.jobTitle, j.companyName, j.jobLevel, ...(j.tags ?? [])].filter(Boolean).join(" "),
+    source: "Jobicy",
+    employmentType: normalizeEmploymentType(j.jobType),
+    postedAt: j.pubDate ? Date.parse(j.pubDate) || undefined : undefined,
+    tags: j.tags ?? undefined,
+  }));
+}
+
 /** Himalayas App — free remote-jobs API with seniority metadata. */
 async function fetchFromHimalayas(): Promise<JobCandidate[]> {
   const res = await fetch("https://himalayasapp.com/api/jobs?limit=50");
@@ -414,10 +482,24 @@ async function fetchLiveJobs(
   location: string | undefined,
   limit: number,
 ): Promise<JobCandidate[]> {
-  const settled = await Promise.allSettled(FREE_JOB_SOURCES.map((s) => s.fetch()));
+  /* CONTINUOUS TARGETED HUNTING: instead of dumping page 1 of generic boards,
+   * the engine hunts EACH target role by name on every board that supports it
+   * (Remotive search, Jobicy tags), plus the general pools for coverage. This
+   * is what makes matches actually relevant. */
+  const primaryRoles = targetRoles.slice(0, 6);
+  const tasks: Promise<JobCandidate[]>[] = [
+    ...primaryRoles.flatMap((role) => [
+      fetchFromRemotiveRole(role),
+      fetchFromJobicyRole(role),
+    ]),
+    ...FREE_JOB_SOURCES.map((s) => s.fetch()),
+  ];
+  const settled = await Promise.allSettled(tasks);
   const candidates: JobCandidate[] = [];
+  let failures = 0;
   for (const result of settled) {
     if (result.status === "fulfilled") candidates.push(...result.value);
+    else failures++;
   }
   // Optional boost: if the owner later adds a Brave Search API key, blend in
   // general web-search results. Free sources still work without it.
@@ -428,6 +510,9 @@ async function fetchLiveJobs(
       // ignore — free sources are the backbone
     }
   }
+  if (candidates.length === 0 && failures >= tasks.length) {
+    throw new Error("All job sources unreachable");
+  }
   // Clean HTML entities some boards leave in names/titles.
   for (const job of candidates) {
     job.title = decodeEntities(job.title).trim();
@@ -436,25 +521,53 @@ async function fetchLiveJobs(
   }
   // Dedupe by URL AND by title+company (some boards cross-post).
   const seenUrl = new Set<string>();
-  const seenRole = new Set<string>();
+  const seenKey = new Set<string>();
   const unique = candidates.filter((job) => {
     if (job.url) {
       if (seenUrl.has(job.url)) return false;
       seenUrl.add(job.url);
     }
     const key = `${job.title.toLowerCase()}@${job.company.toLowerCase()}`;
-    if (seenRole.has(key)) return false;
-    seenRole.add(key);
+    if (seenKey.has(key)) return false;
+    seenKey.add(key);
     return true;
   });
-  return unique
-    // Only jobs a fresher can actually get, ranked best-first.
-    .filter(isFresherFriendly)
-    .map((job) => ({ job, score: scoreJob(job, targetRoles, skills) }))
-    .filter(({ score }) => score >= 3)
+
+  // ACCURACY GATE:
+  //  - must be fresher-appropriate (no senior/lead/3+ years)
+  //  - expired postings (>45 days old) are dropped — only ACTIVE jobs
+  const now = Date.now();
+  const eligible = unique.filter((job) => {
+    if (!isFresherFriendly(job)) return false;
+    if (job.postedAt && now - job.postedAt > 45 * 24 * 60 * 60 * 1000) return false;
+    return true;
+  });
+
+  const roleRegexes = targetRoles.map(
+    (r) => new RegExp(`\\b${escapeRegExp(r.toLowerCase())}\\b`),
+  );
+  const titleHits = (job: JobCandidate) =>
+    roleRegexes.some((re) => re.test(job.title.toLowerCase()));
+
+  // Tier 1 — TITLE-VERIFIED: a target role appears in the job title itself.
+  // Tier 2 — strong relevance elsewhere (tags/description + skills) to fill
+  //          the batch when tier 1 is thinner than the limit.
+  const scored = eligible.map((job) => ({
+    job,
+    score: scoreJob(job, targetRoles, skills),
+    titleHit: titleHits(job),
+  }));
+  const tier1 = scored
+    .filter((s) => s.titleHit && s.score >= 5)
     .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map(({ job }) => job);
+    .map((s) => s.job);
+  const tier1Ids = new Set(tier1.map((j) => `${j.title}@${j.company}`));
+  const tier2 = scored
+    .filter((s) => !tier1Ids.has(`${s.job.title}@${s.job.company}`) && s.score >= 5)
+    .sort((a, b) => b.score - a.score)
+    .map((s) => s.job);
+
+  return [...tier1, ...tier2].slice(0, limit);
 }
 
 /** Optional live job search via the Brave Search API (needs BRAVE_API_KEY). */
