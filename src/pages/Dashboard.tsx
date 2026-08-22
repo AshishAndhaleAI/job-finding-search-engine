@@ -650,27 +650,50 @@ function ProfileTab() {
     setUploadError(null);
     setScanResult(null);
     setFileName(file.name);
+    // Fails fast with a named step instead of spinning forever if the
+    // connection to the backend drops.
+    const step = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+      Promise.race([
+        p,
+        new Promise<never>((_, rej) =>
+          window.setTimeout(
+            () => rej(new Error(`${label} timed out — connection to the server was lost. Refresh the page and try again.`)),
+            ms,
+          ),
+        ),
+      ]);
     try {
       // Step 1: read + chunk the file locally in the browser
       const chunks = await fileToBase64Chunks(file);
       setUploadProgress(0.05);
       // Step 2: open an upload session on the backend
-      const sessionId = await beginUpload({
-        fileName: file.name,
-        mimeType: file.type || "application/octet-stream",
-        totalChunks: chunks.length,
-      });
-      // Step 3: push every chunk through the normal request channel
+      const sessionId = await step(
+        beginUpload({
+          fileName: file.name,
+          mimeType: file.type || "application/octet-stream",
+          totalChunks: chunks.length,
+        }),
+        30000,
+        "Opening upload",
+      );
+      // Step 3: push every chunk through the normal request channel — each
+      // chunk is retried once automatically in case of a network blip.
       for (let i = 0; i < chunks.length; i++) {
-        await pushChunk({ sessionId, index: i, data: chunks[i] });
+        const send = () =>
+          step(pushChunk({ sessionId, index: i, data: chunks[i] }), 45000, `Sending part ${i + 1}/${chunks.length}`);
+        try {
+          await send();
+        } catch {
+          await send();
+        }
         setUploadProgress(0.05 + (0.85 * (i + 1)) / chunks.length);
       }
       // Step 4: backend reassembles the file and stores it
-      const result = await finalizeUpload({ sessionId });
+      const result = await step(finalizeUpload({ sessionId }), 90000, "Finalizing upload");
       const storageId = String(result.storageId);
       setUploadProgress(1);
       // Step 5: save the reference to the user's profile
-      await setResume({ storageId: storageId as Id<"_storage">, fileName: file.name });
+      await step(setResume({ storageId: storageId as Id<"_storage">, fileName: file.name }), 30000, "Saving to your profile");
       setUploading(false);
       setUploadProgress(null);
 

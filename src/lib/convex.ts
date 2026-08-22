@@ -1,18 +1,16 @@
 /**
  * Resolve the Convex backend URL for the current environment.
  *
- * In the Freebuff preview, Vite is served on a proxied host like
- * `5173-<workspace>.daytonaproxy01.net` while the local Convex backend runs on
- * port 3210 in the same sandbox — the browser can only reach it through the
- * sibling proxy `3210-<workspace>.daytonaproxy01.net`. Detect that host shape
- * and derive the URL at runtime so auth and storage work in the preview without
- * any env-file juggling. Everywhere else (localhost, production deploy) the
- * standard VITE_CONVEX_URL env var is used.
+ * In dev (Freebuff preview AND localhost) the browser talks ONLY to the app's
+ * own origin: Vite proxies every `/api` request — including the Convex
+ * WebSocket — to the local backend on 127.0.0.1:3210. This avoids the separate
+ * backend proxy in the Freebuff preview, which has been returning 502s and
+ * leaving uploads hanging. Production deploys use the standard VITE_CONVEX_URL
+ * env var pointing at a Convex Cloud deployment.
  */
 export function resolveConvexUrl(): string | undefined {
-  const hostname = window.location.hostname;
-  if (hostname.startsWith("5173-")) {
-    return `https://3210-${hostname.slice(5)}`;
+  if (import.meta.env.DEV) {
+    return window.location.origin;
   }
   return import.meta.env.VITE_CONVEX_URL as string | undefined;
 }

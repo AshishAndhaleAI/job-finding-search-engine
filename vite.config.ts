@@ -11,19 +11,16 @@ export default defineConfig({
     host: true,
     port: Number(process.env.PORT) || 5173,
     hmr: false,
-    // In local dev the Convex backend runs on 127.0.0.1:3210. Proxying the
-    // storage upload endpoint through the app server keeps file uploads
-    // same-origin — no CORS preflight, no cross-proxy hops, reliable in the
-    // Freebuff preview and on localhost. (Production uses Convex Cloud URLs,
-    // which bypass this entirely.)
+    // In local dev the Convex backend runs on 127.0.0.1:3210. The browser talks
+    // ONLY to this app's own origin: every Convex request AND its WebSocket
+    // (`/api/sync`) are proxied here. This keeps auth, data and file uploads
+    // same-origin and avoids the flaky separate backend proxy in the Freebuff
+    // preview. (Production uses Convex Cloud URLs, which bypass this entirely.)
     proxy: {
-      "/api/storage": {
+      "/api": {
         target: "http://127.0.0.1:3210",
         changeOrigin: true,
-      },
-      "/api/http": {
-        target: "http://127.0.0.1:3210",
-        changeOrigin: true,
+        ws: true,
       },
     },
   },
