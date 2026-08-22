@@ -722,6 +722,7 @@ function ProfileTab() {
           }
           const skills = parsed.skills ?? [];
           const roles = parsed.targetRoles ?? [];
+          const suggested = parsed.suggestedRoles ?? [];
           if (skills.length > 0 && !skillsInput.trim()) {
             setSkillsInput(skills.join(", "));
             filled.push("skills");
@@ -729,16 +730,24 @@ function ProfileTab() {
           if (roles.length > 0 && !rolesInput.trim()) {
             setRolesInput(roles.join(", "));
             filled.push("target roles");
+          } else if (roles.length === 0 && suggested.length > 0 && !rolesInput.trim()) {
+            // Resume didn't name a role, but its skills clearly point at some —
+            // prefill those so the student starts with sensible targets.
+            setRolesInput(suggested.slice(0, 6).join(", "));
+            filled.push("suggested roles");
           }
           const education = parsed.education ?? [];
           if (education.length > 0 && !educationInput.trim()) {
             setEducationInput(education.join("\n"));
             filled.push("education");
           }
+          const extraNote = suggested.length
+            ? ` The engine will also consider ${suggested.length} related fresher roles (${suggested.slice(0, 3).join(", ")}${suggested.length > 3 ? "…" : ""}) so you get hired faster.`
+            : "";
           setScanResult(
             filled.length > 0
-              ? { ok: true, message: `Resume scanned — auto-filled ${filled.join(", ")}. Review below and hit Save.` }
-              : { ok: true, message: "Resume scanned — no new fields to fill. Complete the form and Save." },
+              ? { ok: true, message: `Resume scanned — auto-filled ${filled.join(", ")}.${extraNote} Review below and hit Save.` }
+              : { ok: true, message: `Resume scanned — no new fields to fill.${extraNote}` },
           );
         }
       } catch {

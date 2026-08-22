@@ -18,6 +18,7 @@ import type * as notifications from "../notifications.js";
 import type * as profiles from "../profiles.js";
 import type * as resume from "../resume.js";
 import type * as resumeGen from "../resumeGen.js";
+import type * as roleMap from "../roleMap.js";
 import type * as uploads from "../uploads.js";
 import type * as users from "../users.js";
 import type * as whatsapp from "../whatsapp.js";
@@ -39,6 +40,7 @@ declare const fullApi: ApiFromModules<{
   profiles: typeof profiles;
   resume: typeof resume;
   resumeGen: typeof resumeGen;
+  roleMap: typeof roleMap;
   uploads: typeof uploads;
   users: typeof users;
   whatsapp: typeof whatsapp;

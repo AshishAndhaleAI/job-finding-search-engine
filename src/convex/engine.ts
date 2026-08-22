@@ -2,6 +2,7 @@ import { action, type ActionCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { api } from "./_generated/api";
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { rolesFromSkills } from "./roleMap";
 
 type JobCandidate = {
   title: string;
@@ -37,6 +38,45 @@ const DEMO_JOBS: JobCandidate[] = [
   { title: "Fresh Graduate Sales Trainee", company: "Vertex Retail", location: "Mumbai, India", haystack: "sales trainee retail communication entry level fresher 0 experience" },
   { title: "Junior Data Entry & Operations Associate", company: "DataFlow", location: "Remote (Worldwide)", haystack: "data entry operations excel detail oriented entry level fresher" },
 ];
+
+/**
+ * Generic fresher roles that hire fast and in volume — used to top up the
+ * search list so a student with few/any target roles still gets applications
+ * going immediately.
+ */
+const FAST_STARTER_ROLES = [
+  "graduate trainee",
+  "management trainee",
+  "entry level engineer",
+  "fresher",
+  "operations associate",
+  "customer support",
+  "data entry",
+  "project coordinator",
+];
+
+/**
+ * Build the full role list the engine searches for:
+ *   1. the student's own target roles (their intent comes first), then
+ *   2. entry-level roles derived from their resume skills, then
+ *   3. fast-hiring generic fresher roles to fill remaining slots.
+ * Result: the engine applies to ANY role where this student can realistically
+ * get hired fastest, not just the titles they happened to type.
+ */
+function expandRoles(profile: {
+  targetRoles?: string[];
+  skills?: string[];
+}): string[] {
+  const out: string[] = [];
+  const push = (r: string) => {
+    const key = r.toLowerCase().trim();
+    if (key && !out.includes(key)) out.push(key);
+  };
+  for (const r of profile.targetRoles ?? []) push(r);
+  for (const r of rolesFromSkills(profile.skills ?? [])) push(r);
+  for (const r of FAST_STARTER_ROLES) push(r);
+  return out.slice(0, 12);
+}
 
 function scoreJob(job: JobCandidate, roles: string[], skills: string[]): number {
   const hay = job.haystack.toLowerCase();
@@ -305,19 +345,20 @@ async function runEngineHandler(ctx: ActionCtx, args: { limit?: number }): Promi
   const userId = await getAuthUserId(ctx);
   if (userId === null) throw new Error("Not signed in");
   const profile = await ctx.runQuery(api.profiles.getMyProfile, {});
-  if (!profile || !profile.targetRoles?.length) {
-    return { ran: false, reason: "Complete your profile with at least one target role first.", created: 0 };
+  const roles = profile ? expandRoles(profile) : [];
+  if (!profile || roles.length === 0) {
+    return { ran: false, reason: "Add your details (or upload your resume) first — the engine needs to know who you are.", created: 0 };
   }
   const limit = args.limit ?? 10;
   let jobs: JobCandidate[] = [];
   let mode: "live" | "demo" = "live";
   try {
-    jobs = await fetchLiveJobs(profile.targetRoles, profile.skills ?? [], profile.location ?? undefined, limit);
+    jobs = await fetchLiveJobs(roles, profile.skills ?? [], profile.location ?? undefined, limit);
   } catch {
     jobs = [];
   }
   if (jobs.length === 0) {
-    jobs = matchDemoJobs(profile.targetRoles, profile.skills ?? [], limit);
+    jobs = matchDemoJobs(roles, profile.skills ?? [], limit);
     mode = "demo";
   }
   if (jobs.length === 0) {
@@ -388,16 +429,18 @@ async function engineDailyHandler(ctx: ActionCtx): Promise<{ ran: true; created:
   const profiles = await ctx.runQuery(api.profiles.listAll, {});
   let totalCreated = 0;
   for (const profile of profiles) {
-    if (!profile.autoApplyEnabled || !profile.targetRoles?.length) continue;
+    if (!profile.autoApplyEnabled) continue;
+    const roles = expandRoles(profile);
+    if (roles.length === 0) continue;
     let jobs: JobCandidate[] = [];
     let mode: "live" | "demo" = "live";
     try {
-      jobs = await fetchLiveJobs(profile.targetRoles, profile.skills ?? [], profile.location ?? undefined, 10);
+      jobs = await fetchLiveJobs(roles, profile.skills ?? [], profile.location ?? undefined, 10);
     } catch {
       jobs = [];
     }
     if (jobs.length === 0) {
-      jobs = matchDemoJobs(profile.targetRoles, profile.skills ?? [], 10);
+      jobs = matchDemoJobs(roles, profile.skills ?? [], 10);
       mode = "demo";
     }
     if (jobs.length === 0) continue;

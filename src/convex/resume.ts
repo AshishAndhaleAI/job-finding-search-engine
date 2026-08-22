@@ -4,6 +4,7 @@ import { action } from "./_generated/server";
 import { v } from "convex/values";
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import mammoth from "mammoth";
+import { rolesFromSkills } from "./roleMap";
 
 /* ---------------------------------------------------------------------------
  * Resume parsing — 100% free, no API keys.
@@ -56,6 +57,7 @@ const LOCATIONS = [
   "india", "canada", "australia", "germany", "france", "netherlands", "ireland",
   "switzerland", "singapore", "uae", "remote", "worldwide",
 ];
+
 
 /** Normalized text without excessive whitespace, for line-based heuristics. */
 function cleanText(raw: string): string {
@@ -206,6 +208,8 @@ export type ResumeAnalysis = {
   location?: string;
   skills?: string[];
   targetRoles?: string[];
+  /** Extra fresher-friendly roles derived from the student's skills. */
+  suggestedRoles?: string[];
   education?: string[];
 };
 
@@ -227,14 +231,22 @@ export async function analyzeResumeBytes(bytes: Uint8Array): Promise<ResumeAnaly
   }
 
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const skills = extractSkills(text);
+  const targetRoles = extractRoles(text);
+  // Extra fresher-friendly roles this student could realistically get hired
+  // for based on their skills — shown in the UI and auto-used by the engine.
+  const suggestedRoles = rolesFromSkills(skills)
+    .filter((r) => !targetRoles.includes(r))
+    .slice(0, 8);
   return {
     ok: true,
     name: extractName(lines),
     email: extractEmail(text),
     phone: extractPhone(text),
     location: extractLocation(text),
-    skills: extractSkills(text),
-    targetRoles: extractRoles(text),
+    skills,
+    targetRoles,
+    suggestedRoles,
     education: extractEducation(lines),
   };
 }
