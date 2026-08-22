@@ -78,6 +78,50 @@ export function buildTailoredResume(profile: ProfileLike, job: JobLike): string 
 }
 
 /**
+ * Build a short, professional cover letter tailored to ONE job — mentions the
+ * exact role + company, leads with the student's most relevant skills, and
+ * closes with a confident call to action.
+ */
+export function buildCoverLetter(
+  profile: ProfileLike & { fullName?: string; phone?: string },
+  job: JobLike,
+): string {
+  const name = profile.fullName ?? "Candidate";
+  const skills = profile.skills ?? [];
+  const targetRoles = profile.targetRoles ?? [];
+  const jobHaystack = `${job.jobTitle} ${job.company} ${job.location}`.toLowerCase();
+
+  const relevant = [...skills]
+    .sort((a, b) => {
+      const rel = (s: string) => (jobHaystack.includes(s.toLowerCase()) ? 1 : 0);
+      return rel(b) - rel(a);
+    })
+    .slice(0, 3);
+  const rolePhrase = targetRoles[0] ?? job.jobTitle;
+
+  return [
+    `Dear Hiring Team at ${job.company},`,
+    ``,
+    `I am excited to apply for the ${job.jobTitle} role at ${job.company}. ` +
+      `As a fresher targeting ${rolePhrase} positions, I bring hands-on skills in ` +
+      `${relevant.length > 0 ? relevant.join(", ") : "the core tools this role needs"}` +
+      `, and I learn fast enough to close any gap within weeks, not months.`,
+    ``,
+    `Three reasons I would add value quickly:`,
+    `- Practical skill set: ${relevant.length > 0 ? relevant.join(", ") : "self-driven projects"} applied through coursework and personal projects.`,
+    `- Reliability: I treat every task — however small — as a deliverable with a deadline.`,
+    `- Growth mindset: structured daily practice; my resume is re-tailored to every posting I pursue.`,
+    ``,
+    `I would welcome a short interview to show how these translate into results for ${job.company}. ` +
+      `My resume is attached; references and work samples available on request.`,
+    ``,
+    `Sincerely,`,
+    name,
+    [profile.location, profile.phone].filter(Boolean).join(" | "),
+  ].join("\n");
+}
+
+/**
  * Generate (or regenerate) the tailored resume for one of the signed-in user's
  * applications and store it on the application row.
  */
@@ -95,7 +139,10 @@ export const generateResume = mutation({
     if (!profile) throw new Error("Complete your profile first");
 
     const resume = buildTailoredResume(profile, app);
-    await ctx.db.patch(args.applicationId, { generatedResume: resume });
+    await ctx.db.patch(args.applicationId, {
+      generatedResume: resume,
+      coverLetter: buildCoverLetter(profile, app),
+    });
     return { ok: true, resume };
   },
 });
@@ -116,7 +163,10 @@ export const generateForUser = mutation({
     if (!profile) return { ok: false, reason: "Profile missing" };
 
     const resume = buildTailoredResume(profile, app);
-    await ctx.db.patch(args.applicationId, { generatedResume: resume });
+    await ctx.db.patch(args.applicationId, {
+      generatedResume: resume,
+      coverLetter: buildCoverLetter(profile, app),
+    });
     return { ok: true, resume };
   },
 });

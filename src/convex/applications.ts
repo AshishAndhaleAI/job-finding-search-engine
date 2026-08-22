@@ -66,6 +66,7 @@ export const recordMany = mutation({
         sponsorship: v.optional(v.boolean()),
         postedAt: v.optional(v.number()),
         board: v.optional(v.string()),
+        matchScore: v.optional(v.number()),
       }),
     ),
   },
@@ -96,6 +97,7 @@ export const recordMany = mutation({
         sponsorship: job.sponsorship,
         postedAt: job.postedAt,
         board: job.board,
+        matchScore: job.matchScore,
         createdAt: now,
         appliedAt: job.status === "applied" ? now : undefined,
       });
@@ -125,6 +127,7 @@ export const recordManyForUser = mutation({
         sponsorship: v.optional(v.boolean()),
         postedAt: v.optional(v.number()),
         board: v.optional(v.string()),
+        matchScore: v.optional(v.number()),
       }),
     ),
   },
@@ -153,6 +156,7 @@ export const recordManyForUser = mutation({
         sponsorship: job.sponsorship,
         postedAt: job.postedAt,
         board: job.board,
+        matchScore: job.matchScore,
         createdAt: now,
         appliedAt: job.status === "applied" ? now : undefined,
       });

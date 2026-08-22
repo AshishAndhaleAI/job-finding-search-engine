@@ -77,6 +77,8 @@ export default defineSchema({
     sponsorship: v.optional(v.boolean()),   // posting mentions visa sponsorship
     postedAt: v.optional(v.number()),       // when the employer posted it
     board: v.optional(v.string()),          // which job board it came from
+    matchScore: v.optional(v.number()),     // 0-100: how well the job fits the student
+    coverLetter: v.optional(v.string()),    // tailored cover letter for this job
     createdAt: v.number(),
     appliedAt: v.optional(v.number()),
     // Tailored resume the engine built for this specific job posting.

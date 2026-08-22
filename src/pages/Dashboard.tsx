@@ -300,6 +300,31 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
         </div>
       )}
 
+      {stats && stats.total > 0 && (
+        <Card>
+          <CardContent className="p-5">
+            <p className="mb-2 text-xs font-medium text-muted-foreground">Your pipeline — from first application to offer</p>
+            <div className="flex h-3 w-full overflow-hidden rounded-full bg-muted">
+              {([
+                [stats.applied, "bg-accent"],
+                [stats.interviews, "bg-amber-500"],
+                [stats.offers, "bg-emerald-500"],
+              ] as const).map(([v, color], i) => (
+                <div
+                  key={i}
+                  className={cn("h-full", color)}
+                  style={{ width: `${Math.min(100, (v / stats.total) * 100)}%` }}
+                />
+              ))}
+            </div>
+            <div className="mt-1.5 flex justify-between text-[11px] text-muted-foreground">
+              <span>{stats.total} total</span>
+              <span>{stats.applied} applied · {stats.interviews} interviews · {stats.offers} offers</span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Engine status */}
         <Card>
@@ -412,6 +437,7 @@ function ApplicationsTab() {
   const [resumeAppId, setResumeAppId] = useState<Id<"applications"> | null>(null);
   const [generatingId, setGeneratingId] = useState<Id<"applications"> | null>(null);
   const [genError, setGenError] = useState<string | null>(null);
+  const [docTab, setDocTab] = useState<"Resume" | "Cover letter">("Resume");
 
   const viewApp = resumeAppId ? applications?.find((a) => a._id === resumeAppId) ?? null : null;
 
@@ -427,11 +453,44 @@ function ApplicationsTab() {
     }
   }
 
+  const [search, setSearch] = useState("");
+
   const filtered = useMemo(() => {
     if (!applications) return [];
-    if (filter === "all") return applications;
-    return applications.filter((a) => a.status === filter);
-  }, [applications, filter]);
+    const q = search.trim().toLowerCase();
+    return applications.filter((a) => {
+      if (filter !== "all" && a.status !== filter) return false;
+      if (!q) return true;
+      return `${a.jobTitle} ${a.company} ${a.location}`.toLowerCase().includes(q);
+    });
+  }, [applications, filter, search]);
+
+  function exportCsv() {
+    if (!applications) return;
+    const rows = [
+      ["Job", "Company", "Location", "Status", "Match %", "Type", "Board", "Applied", "Link"],
+      ...applications.map((a) => [
+        a.jobTitle,
+        a.company,
+        a.location,
+        a.status,
+        a.matchScore != null ? `${a.matchScore}%` : "",
+        a.employmentType ?? "",
+        a.board ?? "",
+        a.appliedAt ? new Date(a.appliedAt).toISOString().slice(0, 10) : "",
+        a.sourceUrl ?? "",
+      ]),
+    ];
+    const csv = rows
+      .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `firststep-applications-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
 
   if (!applications) {
     return <div className="py-20 text-center text-sm text-muted-foreground">Loading applications…</div>;
@@ -439,12 +498,24 @@ function ApplicationsTab() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="font-display text-2xl font-bold tracking-tight">Applications</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Everything the engine found and submitted for you.
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="font-display text-2xl font-bold tracking-tight">Applications</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Everything the engine found and submitted for you.
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={exportCsv} disabled={applications.length === 0}>
+          Export CSV
+        </Button>
       </div>
+
+      <input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search by job, company, or location…"
+        className="h-10 w-full max-w-md rounded-lg border border-input bg-card px-3.5 text-sm outline-none placeholder:text-muted-foreground/60 focus-visible:ring-2 focus-visible:ring-ring"
+      />
 
       <div className="flex flex-wrap gap-2">
         {(["all", ...STATUS_ORDER] as const).map((s) => (
@@ -512,6 +583,20 @@ function ApplicationsTab() {
                       {app.sponsorship === true && (
                         <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] text-sky-400">
                           Visa sponsorship mentioned
+                        </span>
+                      )}
+                      {typeof app.matchScore === "number" && (
+                        <span
+                          className={cn(
+                            "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                            app.matchScore >= 80
+                              ? "border border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+                              : app.matchScore >= 60
+                                ? "border border-accent/40 bg-accent/10 text-accent"
+                                : "border border-border bg-card text-muted-foreground",
+                          )}
+                        >
+                          {app.matchScore}% match
                         </span>
                       )}
                       {app.board && (
@@ -582,7 +667,7 @@ function ApplicationsTab() {
             <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3.5">
               <div className="min-w-0">
                 <p className="flex items-center gap-2 text-sm font-semibold">
-                  <FileText className="size-4 text-primary" /> Tailored resume
+                  <FileText className="size-4 text-primary" /> Application documents
                 </p>
                 <p className="mt-0.5 truncate text-xs text-muted-foreground">
                   {viewApp.jobTitle} · {viewApp.company}
@@ -592,8 +677,24 @@ function ApplicationsTab() {
                 Close
               </Button>
             </div>
+            <div className="flex gap-1 border-b border-border px-5 pt-2">
+              {(["Resume", "Cover letter"] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setDocTab(t)}
+                  className={cn(
+                    "rounded-t-md px-3 py-1.5 text-xs font-medium transition-colors",
+                    docTab === t ? "border-b-2 border-primary text-primary" : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
             <div className="max-h-[60vh] flex-1 overflow-y-auto whitespace-pre-wrap p-5 font-mono text-xs leading-relaxed text-foreground/90">
-              {viewApp.generatedResume ?? "No tailored resume for this job yet — generate one from your profile."}
+              {docTab === "Resume"
+                ? viewApp.generatedResume ?? "No tailored resume for this job yet — generate one from your profile."
+                : viewApp.coverLetter ?? "No cover letter yet — generate documents from your profile."}
             </div>
             {!viewApp.generatedResume && (
               <div className="flex items-center gap-3 border-t border-border px-5 py-3.5">

@@ -857,7 +857,7 @@ async function runEngineHandler(ctx: ActionCtx, args: { limit?: number }): Promi
   };
 
   const prepared = [] as Array<
-    JobCandidate & { status: "matched" | "applying" | "applied"; employmentType?: string; seniority?: string; sponsorship?: boolean; postedAt?: number; board?: string }
+    JobCandidate & { status: "matched" | "applying" | "applied"; employmentType?: string; seniority?: string; sponsorship?: boolean; postedAt?: number; board?: string; matchScore?: number }
   >;
   for (const { j, applyEmail } of jobs.map(toRecord)) {
     const base = {
@@ -871,6 +871,8 @@ async function runEngineHandler(ctx: ActionCtx, args: { limit?: number }): Promi
       sponsorship: sponsorshipFrom(`${j.title} ${j.haystack}`) || undefined,
       postedAt: j.postedAt,
       board: j.source,
+      // Human-friendly match percentage derived from the relevance score.
+      matchScore: Math.max(40, Math.min(98, 35 + scoreJob(j, roles, profile.skills ?? []) * 5)),
     };
     if (!auto) {
       prepared.push({ ...j, ...base, status: "matched" });
@@ -925,6 +927,7 @@ async function runEngineHandler(ctx: ActionCtx, args: { limit?: number }): Promi
       sponsorship: j.sponsorship,
       postedAt: j.postedAt,
       board: j.board,
+      matchScore: j.matchScore,
     })),
   });
 
@@ -1022,7 +1025,7 @@ async function engineDailyHandler(ctx: ActionCtx): Promise<{ ran: true; created:
     const studentEmail: string | undefined = me?.email ?? undefined;
     let submittedCount = 0;
     const preparedCron = [] as Array<
-      JobCandidate & { status: "applying" | "applied"; employmentType?: string; seniority?: string; sponsorship?: boolean; postedAt?: number; board?: string }
+      JobCandidate & { status: "applying" | "applied"; employmentType?: string; seniority?: string; sponsorship?: boolean; postedAt?: number; board?: string; matchScore?: number }
     >;
     for (const j of jobs) {
       const base = {
@@ -1036,6 +1039,7 @@ async function engineDailyHandler(ctx: ActionCtx): Promise<{ ran: true; created:
         sponsorship: sponsorshipFrom(`${j.title} ${j.haystack}`) || undefined,
         postedAt: j.postedAt,
         board: j.source,
+        matchScore: Math.max(40, Math.min(98, 35 + scoreJob(j, roles, profile.skills ?? []) * 5)),
       };
       const applyEmail = extractApplyEmail(`${j.haystack} ${j.description ?? ""}`);
       if (mode === "live" && applyEmail && studentEmail) {
@@ -1072,6 +1076,7 @@ async function engineDailyHandler(ctx: ActionCtx): Promise<{ ran: true; created:
         sponsorship: j.sponsorship,
         postedAt: j.postedAt,
         board: j.board,
+        matchScore: j.matchScore,
       })),
     });
     await ctx.runMutation(api.profiles.markEngineRunForUser, {
