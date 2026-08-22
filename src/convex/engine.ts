@@ -340,6 +340,82 @@ async function fetchFromJobicy(): Promise<JobCandidate[]> {
   }));
 }
 
+/* ---------------------------------------------------------------------------
+ * WEB-SCALE HUNTING (no API key): DuckDuckGo's HTML search endpoint is free
+ * and keyless. The engine queries it per role, restricted to company career
+ * sites (Lever / Greenhouse / Ashby / Workable), so results are REAL openings
+ * straight from employers — beyond what any single job board API offers.
+ * ------------------------------------------------------------------------- */
+
+async function ddgSearch(query: string): Promise<Array<{ title: string; url: string; snippet: string }>> {
+  const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+      Accept: "text/html,application/xhtml+xml",
+      "Accept-Language": "en-US,en;q=0.9",
+    },
+  });
+  if (!res.ok) throw new Error(`DDG HTTP ${res.status}`);
+  const html = await res.text();
+  const results: Array<{ title: string; url: string; snippet: string }> = [];
+  const linkRe = /class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+  let m: RegExpExecArray | null;
+  while ((m = linkRe.exec(html)) !== null && results.length < 25) {
+    let href = m[1];
+    const uddg = href.match(/uddg=([^&]+)/);
+    if (uddg) href = decodeURIComponent(uddg[1]);
+    if (!/^https?:\/\//.test(href)) continue;
+    const title = decodeEntities(m[2].replace(/<[^>]+>/g, "")).trim();
+    if (!title) continue;
+    results.push({ title, url: href, snippet: "" });
+  }
+  const snipRe = /class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+  let i = 0;
+  while ((m = snipRe.exec(html)) !== null && i < results.length) {
+    results[i].snippet = decodeEntities(m[1].replace(/<[^>]+>/g, "")).trim();
+    i++;
+  }
+  return results;
+}
+
+/** Derive the company name from an ATS posting URL. */
+function companyFromAtsUrl(url: string): string | undefined {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "");
+    const parts = u.pathname.split("/").filter(Boolean);
+    if (/jobs\.lever\.co$/.test(host) && parts[0]) return parts[0];
+    if (/(job-boards\.)?boards\.greenhouse\.io$/.test(host) && parts[0]) return parts[0];
+    if (/jobs\.ashbyhq\.com$/.test(host) && parts[0]) return parts[0];
+    if (/\.workable\.com$/.test(host)) return host.split(".")[0];
+    if (/\.myworkdayjobs\.com$/.test(host)) return host.split(".")[0];
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Hunt the open web for ONE role on employer career sites. */
+async function searchWebForRole(role: string): Promise<JobCandidate[]> {
+  const query =
+    `(site:jobs.lever.co OR site:boards.greenhouse.io OR site:job-boards.greenhouse.io ` +
+    `OR site:jobs.ashbyhq.com OR site:apply.workable.com) "${role}" ` +
+    `("entry level" OR junior OR graduate OR internship OR trainee)`;
+  const hits = await ddgSearch(query);
+  return hits.map((r) => {
+    const company = companyFromAtsUrl(r.url) ?? "Unknown company";
+    return {
+      title: r.title,
+      company: company.charAt(0).toUpperCase() + company.slice(1),
+      location: "See posting",
+      url: r.url,
+      haystack: [r.title, company, r.snippet].filter(Boolean).join(" "),
+      source: "Web search",
+    } satisfies JobCandidate;
+  });
+}
+
 /** Targeted Remotive hunt for ONE role — far more relevant than page 1 dumps. */
 async function fetchFromRemotiveRole(role: string): Promise<JobCandidate[]> {
   const res = await fetch(
@@ -370,6 +446,50 @@ async function fetchFromRemotiveRole(role: string): Promise<JobCandidate[]> {
     postedAt: j.publication_date ? Date.parse(j.publication_date) || undefined : undefined,
     tags: j.tags,
   }));
+}
+
+/** WeWorkRemotely category RSS — employer-posted, fresh, no API key needed. */
+async function fetchWwrCategory(feed: string): Promise<JobCandidate[]> {
+  const res = await fetch(`https://weworkremotely.com/categories/${feed}.rss`);
+  if (!res.ok) throw new Error(`WWR HTTP ${res.status}`);
+  const xml = await res.text();
+  const items = xml.match(/<item>[\s\S]*?<\/item>/g) ?? [];
+  const cdata = (s: string, tag: string) =>
+    s.match(new RegExp(`<${tag}><!\\[CDATA\\[([\\s\\S]*?)\\]\\]></${tag}>`))?.[1] ??
+    s.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`))?.[1] ??
+    "";
+  return items.map((item) => {
+    const rawTitle = decodeEntities(cdata(item, "title").trim());
+    // Titles look like "Acme Corp: Role (Anywhere)" — split them.
+    const colonIdx = rawTitle.indexOf(":");
+    const company = colonIdx > 0 ? rawTitle.slice(0, colonIdx).trim() : "Unknown company";
+    const title = colonIdx > 0 ? rawTitle.slice(colonIdx + 1).trim() : rawTitle || "Unknown role";
+    const url = cdata(item, "link").trim() || undefined;
+    const pubDate = cdata(item, "pubDate").trim();
+    const descHtml = cdata(item, "description");
+    return {
+      title,
+      company,
+      location: /anywhere/i.test(rawTitle) ? "Remote (Worldwide)" : "Remote",
+      url,
+      haystack: [title, company, stripHtml(descHtml)?.slice(0, 400)].filter(Boolean).join(" "),
+      source: "WeWorkRemotely",
+      postedAt: pubDate ? Date.parse(pubDate) || undefined : undefined,
+      description: stripHtml(descHtml),
+    } satisfies JobCandidate;
+  });
+}
+
+async function fetchFromWwr(): Promise<JobCandidate[]> {
+  const feeds = await Promise.allSettled([
+    fetchWwrCategory("remote-programming-jobs"),
+    fetchWwrCategory("remote-design-jobs"),
+    fetchWwrCategory("remote-customer-support-jobs"),
+  ]);
+  const out: JobCandidate[] = [];
+  for (const f of feeds) if (f.status === "fulfilled") out.push(...f.value);
+  if (out.length === 0) throw new Error("WWR returned nothing");
+  return out;
 }
 
 /** Targeted Jobicy hunt for ONE role via its tag index. */
@@ -469,6 +589,7 @@ const FREE_JOB_SOURCES: { name: string; fetch: () => Promise<JobCandidate[]> }[]
   { name: "RemoteOK", fetch: fetchFromRemoteOk },
   { name: "Jobicy", fetch: fetchFromJobicy },
   { name: "Himalayas", fetch: fetchFromHimalayas },
+  { name: "WeWorkRemotely", fetch: fetchFromWwr },
 ];
 
 /**
@@ -487,11 +608,13 @@ async function fetchLiveJobs(
    * (Remotive search, Jobicy tags), plus the general pools for coverage. This
    * is what makes matches actually relevant. */
   const primaryRoles = targetRoles.slice(0, 6);
+  const webRoles = targetRoles.slice(0, 3); // polite: 3 web queries per sweep
   const tasks: Promise<JobCandidate[]>[] = [
     ...primaryRoles.flatMap((role) => [
       fetchFromRemotiveRole(role),
       fetchFromJobicyRole(role),
     ]),
+    ...webRoles.map((role) => searchWebForRole(role)),
     ...FREE_JOB_SOURCES.map((s) => s.fetch()),
   ];
   const settled = await Promise.allSettled(tasks);
